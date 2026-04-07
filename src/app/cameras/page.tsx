@@ -3,28 +3,39 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Camera, RefreshCw, ZoomIn, ZoomOut, Home as HomeIcon } from "lucide-react";
+import { Camera, RefreshCw, ZoomIn, ZoomOut, ExternalLink } from "lucide-react";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
-const SHARE_URL = process.env.NEXT_PUBLIC_UNIFI_SHARE_URL ?? "";
-
-// Direct UniFi API helpers (client-side — key is NEXT_PUBLIC so it's in the browser bundle)
+// Local NVR (via Tailscale) — all Protect API calls go here
+const NVR_URL = (process.env.NEXT_PUBLIC_UNIFI_NVR_URL ?? "https://tvr").replace(/\/$/, "");
 const UNIFI_KEY = process.env.NEXT_PUBLIC_UNIFI_API_KEY ?? "";
-const UNIFI_NVR = process.env.NEXT_PUBLIC_UNIFI_NVR_HOST_ID ?? "";
 const UNIFI_PTZ_ID = process.env.NEXT_PUBLIC_UNIFI_PTZ_CAMERA_ID ?? "";
+const UNIFI_TURRET_ID = process.env.NEXT_PUBLIC_UNIFI_CAMERA_ID ?? "";
 
-function unifiUrl(path: string) {
-  const enc = encodeURIComponent(UNIFI_NVR);
-  return `https://api.ui.com/v1/connector/consoles/${enc}/proxy/protect/api/${path}`;
+// Direct camera IP for live view (on local subnet / Tailscale)
+const PTZ_IP = process.env.NEXT_PUBLIC_UNIFI_PTZ_IP ?? "10.10.200.81";
+
+function nvrUrl(path: string) {
+  return `${NVR_URL}/proxy/protect/api/${path}`;
 }
 
-async function unifiPost(path: string, body: object): Promise<{ ok: boolean; status: number }> {
-  const r = await fetch(unifiUrl(path), {
-    method: "POST",
-    headers: { "X-API-Key": UNIFI_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return { ok: r.ok, status: r.status };
+function nvrHeaders(accept = "application/json") {
+  return {
+    Authorization: `Bearer ${UNIFI_KEY}`,
+    Accept: accept,
+  };
+}
+
+async function nvrPost(path: string, body: object): Promise<{ ok: boolean; status: number; error?: string }> {
+  try {
+    const r = await fetch(nvrUrl(path), {
+      method: "POST",
+      headers: { ...nvrHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { ok: r.ok, status: r.status };
+  } catch (e) {
+    return { ok: false, status: 0, error: String(e) };
+  }
 }
 
 // ── PTZ Controls ─────────────────────────────────────────────────────────────
@@ -42,43 +53,41 @@ function PtzControls({ presets }: { presets: Array<{ name: string; slot: number 
   const s = STEPS[step];
 
   async function ptzCall(type: string, payload: object) {
-    if (!UNIFI_KEY || !UNIFI_NVR || !UNIFI_PTZ_ID) {
-      // Fallback: go through Railway proxy
+    setStatus("↗ sending…");
+    let result: { ok: boolean; status: number; error?: string };
+
+    if (NVR_URL && UNIFI_KEY && UNIFI_PTZ_ID) {
+      result = await nvrPost(`cameras/${UNIFI_PTZ_ID}/move`, { type, payload });
+    } else {
+      // Fallback through Railway proxy
       try {
         await api.cameraPtz(type, payload);
-        setStatus("✓");
-      } catch { setStatus("⚠ error"); }
-      return;
+        result = { ok: true, status: 200 };
+      } catch {
+        result = { ok: false, status: 0 };
+      }
     }
-    const result = await unifiPost(`cameras/${UNIFI_PTZ_ID}/move`, { type, payload });
-    setStatus(result.ok ? "✓" : `⚠ ${result.status}`);
+
+    setStatus(result.ok ? "✓" : `⚠ ${result.status || result.error || "error"}`);
+    setTimeout(() => setStatus(""), 2000);
   }
 
   async function move(panPos: number, tiltPos: number) {
-    setStatus("↗ sending…");
     await ptzCall("relative", { panPos, tiltPos, panSpeed: 50, tiltSpeed: 50 });
-    setTimeout(() => setStatus(""), 1800);
   }
 
   async function zoom(dir: number) {
-    setStatus("↗ sending…");
     await ptzCall("zoom", { zoomPos: dir * s.z, zoomSpeed: 50 });
-    setTimeout(() => setStatus(""), 1800);
   }
 
   async function center() {
-    setStatus("↗ sending…");
     await ptzCall("center", {});
-    setTimeout(() => setStatus(""), 1800);
   }
 
   async function goPreset(slot: number) {
-    setStatus("↗ sending…");
     await ptzCall("preset", { slot });
-    setTimeout(() => setStatus(""), 1800);
   }
 
-  // Keyboard bindings
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.target as HTMLElement).tagName === "INPUT") return;
@@ -94,7 +103,7 @@ function PtzControls({ presets }: { presets: Array<{ name: string; slot: number 
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [step, presets]);  // eslint-disable-line
+  }, [step, presets]); // eslint-disable-line
 
   return (
     <div className="rounded-xl border border-border/50 bg-card p-4 space-y-3">
@@ -156,6 +165,167 @@ function PtzControls({ presets }: { presets: Array<{ name: string; slot: number 
   );
 }
 
+// ── Live PTZ view — snapshot feed from NVR + direct camera link ───────────────
+function PtzLiveView() {
+  const [src, setSrc] = useState<string | null>(null);
+  const [ts, setTs] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const prevUrl = useRef<string | null>(null);
+
+  const fetchSnap = useCallback(async () => {
+    // Try NVR snapshot API first (via Tailscale)
+    if (NVR_URL && UNIFI_KEY && UNIFI_PTZ_ID) {
+      try {
+        const r = await fetch(nvrUrl(`cameras/${UNIFI_PTZ_ID}/snapshot?ts=${Date.now()}`), {
+          headers: nvrHeaders("image/jpeg"),
+        });
+        if (r.ok) {
+          const blob = await r.blob();
+          const objUrl = URL.createObjectURL(blob);
+          setSrc(objUrl);
+          setTs(new Date().toLocaleTimeString("en-GB"));
+          setErr(null);
+          if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
+          prevUrl.current = objUrl;
+          return;
+        } else {
+          setErr(`NVR ${r.status}`);
+        }
+      } catch (e) {
+        setErr(String(e));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSnap();
+    const t = setInterval(fetchSnap, 3000);
+    return () => {
+      clearInterval(t);
+      if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
+    };
+  }, [fetchSnap]);
+
+  return (
+    <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border/40">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">G5 PTZ — Live</span>
+          {src && !err && <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">Live</Badge>}
+          {err && <Badge variant="outline" className="text-xs text-amber-400 border-amber-500/30">{err}</Badge>}
+        </div>
+        <div className="flex items-center gap-3">
+          {ts && <span className="text-xs text-muted-foreground">{ts}</span>}
+          <a
+            href={`http://${PTZ_IP}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            <ExternalLink className="h-3 w-3" /> Open camera
+          </a>
+          <a
+            href={`${NVR_URL}/protect/cameras/${UNIFI_PTZ_ID}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            <ExternalLink className="h-3 w-3" /> Open Protect
+          </a>
+        </div>
+      </div>
+      {src ? (
+        <img src={src} className="w-full object-cover" style={{ height: 420 }} alt="PTZ Live" />
+      ) : (
+        <div className="flex flex-col items-center justify-center gap-3 bg-muted/20" style={{ height: 420 }}>
+          {err ? (
+            <>
+              <Camera className="h-8 w-8 text-muted-foreground/30" />
+              <p className="text-sm text-muted-foreground">
+                {UNIFI_KEY ? `Cannot reach NVR (${err}) — make sure Tailscale is connected` : "Set NEXT_PUBLIC_UNIFI_API_KEY"}
+              </p>
+              <a href={`http://${PTZ_IP}`} target="_blank" rel="noopener noreferrer">
+                <Button size="sm" variant="outline" className="gap-1">
+                  <ExternalLink className="h-3 w-3" /> Open camera directly at {PTZ_IP}
+                </Button>
+              </a>
+            </>
+          ) : (
+            <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground/50" />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Turret camera (snapshot feed from NVR) ────────────────────────────────────
+function TurretCamera() {
+  const [src, setSrc] = useState<string | null>(null);
+  const [ts, setTs] = useState<string | null>(null);
+  const prevUrl = useRef<string | null>(null);
+
+  const fetchSnap = useCallback(async () => {
+    if (!UNIFI_TURRET_ID) return;
+
+    // Try NVR via Tailscale
+    if (NVR_URL && UNIFI_KEY) {
+      try {
+        const r = await fetch(nvrUrl(`cameras/${UNIFI_TURRET_ID}/snapshot?ts=${Date.now()}`), {
+          headers: nvrHeaders("image/jpeg"),
+        });
+        if (r.ok) {
+          const blob = await r.blob();
+          const objUrl = URL.createObjectURL(blob);
+          setSrc(objUrl);
+          setTs(new Date().toLocaleTimeString("en-GB"));
+          if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
+          prevUrl.current = objUrl;
+          return;
+        }
+      } catch { /* fall through */ }
+    }
+
+    // Railway proxy fallback
+    try {
+      const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const r = await fetch(`${BASE}/api/cameras/snapshot/${UNIFI_TURRET_ID}?t=${Date.now()}`);
+      if (!r.ok) return;
+      const blob = await r.blob();
+      const objUrl = URL.createObjectURL(blob);
+      setSrc(objUrl);
+      setTs(new Date().toLocaleTimeString("en-GB"));
+      if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
+      prevUrl.current = objUrl;
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    fetchSnap();
+    const t = setInterval(fetchSnap, 5000);
+    return () => {
+      clearInterval(t);
+      if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
+    };
+  }, [fetchSnap]);
+
+  return (
+    <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border/40">
+        <span className="text-sm font-medium">G5 Turret Ultra</span>
+        {ts && <span className="text-xs text-muted-foreground">{ts}</span>}
+      </div>
+      {src ? (
+        <img src={src} className="w-full" alt="G5 Turret" />
+      ) : (
+        <div className="flex items-center justify-center bg-muted/20" style={{ height: 200 }}>
+          <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground/50" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Gauge snapshot card ───────────────────────────────────────────────────────
 type SnapRow = { preset?: number; camera_id?: string; snapshot_b64?: string; annotation?: string; taken_at?: string };
 
@@ -210,73 +380,17 @@ function GaugeCard({ snap, onRefresh }: { snap: SnapRow; onRefresh: (preset: num
   );
 }
 
-const UNIFI_TURRET_ID = process.env.NEXT_PUBLIC_UNIFI_CAMERA_ID ?? "";
-
-// ── Turret camera ─────────────────────────────────────────────────────────────
-function TurretCamera() {
-  const [src, setSrc] = useState<string | null>(null);
-  const [ts, setTs] = useState<string | null>(null);
-  const prevUrl = useRef<string | null>(null);
-
-  const fetchSnap = useCallback(async () => {
-    // Prefer direct UniFi API call; fall back to Railway proxy
-    let res: Response | null = null;
-    if (UNIFI_KEY && UNIFI_NVR && UNIFI_TURRET_ID) {
-      try {
-        res = await fetch(unifiUrl(`cameras/${UNIFI_TURRET_ID}/snapshot?ts=${Date.now()}`), {
-          headers: { "X-API-Key": UNIFI_KEY, Accept: "image/jpeg" },
-        });
-      } catch { res = null; }
-    }
-    if (!res || !res.ok) {
-      // Railway proxy fallback
-      try {
-        res = await fetch(`${BASE}/api/cameras/snapshot/${UNIFI_TURRET_ID}?t=${Date.now()}`);
-      } catch { return; }
-    }
-    if (!res || !res.ok) return;
-    const blob = await res.blob();
-    const objUrl = URL.createObjectURL(blob);
-    setSrc(objUrl);
-    setTs(new Date().toLocaleTimeString("en-GB"));
-    if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
-    prevUrl.current = objUrl;
-  }, []);
-
-  useEffect(() => {
-    fetchSnap();
-    const t = setInterval(fetchSnap, 5000);
-    return () => { clearInterval(t); if (prevUrl.current) URL.revokeObjectURL(prevUrl.current); };
-  }, [fetchSnap]);
-
-  return (
-    <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border/40">
-        <span className="text-sm font-medium">G5 Turret Ultra</span>
-        {ts && <span className="text-xs text-muted-foreground">{ts}</span>}
-      </div>
-      {src ? (
-        <img src={src} className="w-full" alt="G5 Turret" />
-      ) : (
-        <div className="flex items-center justify-center bg-muted/20" style={{ height: 200 }}>
-          <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground/50" />
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function CamerasPage() {
   const [snapshots, setSnapshots] = useState<SnapRow[]>([]);
   const [snappingAll, setSnappingAll] = useState(false);
 
   const PRESETS = [
-    { name: process.env.NEXT_PUBLIC_UNIFI_PRESET_0 ?? "Preset 0", slot: 0 },
-    { name: process.env.NEXT_PUBLIC_UNIFI_PRESET_1 ?? "Preset 1", slot: 1 },
-    { name: process.env.NEXT_PUBLIC_UNIFI_PRESET_2 ?? "Preset 2", slot: 2 },
-    { name: process.env.NEXT_PUBLIC_UNIFI_PRESET_3 ?? "Preset 3", slot: 3 },
-  ].filter(p => !p.name.startsWith("Preset ") || snapshots.some(s => s.preset === p.slot));
+    { name: process.env.NEXT_PUBLIC_UNIFI_PRESET_0 ?? "Overview", slot: 0 },
+    { name: process.env.NEXT_PUBLIC_UNIFI_PRESET_1 ?? "Gauges", slot: 1 },
+    { name: process.env.NEXT_PUBLIC_UNIFI_PRESET_2 ?? "Pumps", slot: 2 },
+    { name: process.env.NEXT_PUBLIC_UNIFI_PRESET_3 ?? "Buffer", slot: 3 },
+  ];
 
   const fetchSnapshots = useCallback(async () => {
     try {
@@ -308,24 +422,16 @@ export default function CamerasPage() {
           <Camera className="h-5 w-5 text-blue-400" />
           <h1 className="font-semibold text-lg">Cameras</h1>
         </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
+          Via Tailscale → tvr
+        </div>
       </div>
 
       {/* PTZ Live + Controls */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2">
-          {SHARE_URL ? (
-            <div className="rounded-xl border border-border/50 overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-2 border-b border-border/40">
-                <span className="text-sm font-medium">G5 PTZ — Live</span>
-                <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">Live</Badge>
-              </div>
-              <iframe src={SHARE_URL} className="w-full" style={{ height: 420 }} title="PTZ Camera Live" allow="autoplay" />
-            </div>
-          ) : (
-            <div className="rounded-xl border border-border/40 bg-muted/20 flex items-center justify-center text-muted-foreground text-sm" style={{ height: 420 }}>
-              Set NEXT_PUBLIC_UNIFI_SHARE_URL to enable live stream
-            </div>
-          )}
+          <PtzLiveView />
         </div>
         <div>
           <PtzControls presets={PRESETS} />
