@@ -8,6 +8,25 @@ import { Camera, RefreshCw, ZoomIn, ZoomOut, Home as HomeIcon } from "lucide-rea
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 const SHARE_URL = process.env.NEXT_PUBLIC_UNIFI_SHARE_URL ?? "";
 
+// Direct UniFi API helpers (client-side — key is NEXT_PUBLIC so it's in the browser bundle)
+const UNIFI_KEY = process.env.NEXT_PUBLIC_UNIFI_API_KEY ?? "";
+const UNIFI_NVR = process.env.NEXT_PUBLIC_UNIFI_NVR_HOST_ID ?? "";
+const UNIFI_PTZ_ID = process.env.NEXT_PUBLIC_UNIFI_PTZ_CAMERA_ID ?? "";
+
+function unifiUrl(path: string) {
+  const enc = encodeURIComponent(UNIFI_NVR);
+  return `https://api.ui.com/v1/connector/consoles/${enc}/proxy/protect/api/${path}`;
+}
+
+async function unifiPost(path: string, body: object): Promise<{ ok: boolean; status: number }> {
+  const r = await fetch(unifiUrl(path), {
+    method: "POST",
+    headers: { "X-API-Key": UNIFI_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { ok: r.ok, status: r.status };
+}
+
 // ── PTZ Controls ─────────────────────────────────────────────────────────────
 const STEPS = {
   sm: { p: 500, t: 300, z: 50 },
@@ -22,39 +41,40 @@ function PtzControls({ presets }: { presets: Array<{ name: string; slot: number 
   const [status, setStatus] = useState("");
   const s = STEPS[step];
 
+  async function ptzCall(type: string, payload: object) {
+    if (!UNIFI_KEY || !UNIFI_NVR || !UNIFI_PTZ_ID) {
+      // Fallback: go through Railway proxy
+      try {
+        await api.cameraPtz(type, payload);
+        setStatus("✓");
+      } catch { setStatus("⚠ error"); }
+      return;
+    }
+    const result = await unifiPost(`cameras/${UNIFI_PTZ_ID}/move`, { type, payload });
+    setStatus(result.ok ? "✓" : `⚠ ${result.status}`);
+  }
+
   async function move(panPos: number, tiltPos: number) {
     setStatus("↗ sending…");
-    try {
-      await api.cameraPtz("relative", { panPos, tiltPos, panSpeed: 50, tiltSpeed: 50 });
-      setStatus("✓");
-    } catch { setStatus("⚠ error"); }
+    await ptzCall("relative", { panPos, tiltPos, panSpeed: 50, tiltSpeed: 50 });
     setTimeout(() => setStatus(""), 1800);
   }
 
   async function zoom(dir: number) {
     setStatus("↗ sending…");
-    try {
-      await api.cameraPtz("zoom", { zoomPos: dir * s.z, zoomSpeed: 50 });
-      setStatus("✓");
-    } catch { setStatus("⚠ error"); }
+    await ptzCall("zoom", { zoomPos: dir * s.z, zoomSpeed: 50 });
     setTimeout(() => setStatus(""), 1800);
   }
 
   async function center() {
     setStatus("↗ sending…");
-    try {
-      await api.cameraPtz("center", {});
-      setStatus("✓");
-    } catch { setStatus("⚠ error"); }
+    await ptzCall("center", {});
     setTimeout(() => setStatus(""), 1800);
   }
 
   async function goPreset(slot: number) {
     setStatus("↗ sending…");
-    try {
-      await api.cameraPtz("preset", { slot });
-      setStatus("✓");
-    } catch { setStatus("⚠ error"); }
+    await ptzCall("preset", { slot });
     setTimeout(() => setStatus(""), 1800);
   }
 
@@ -190,6 +210,8 @@ function GaugeCard({ snap, onRefresh }: { snap: SnapRow; onRefresh: (preset: num
   );
 }
 
+const UNIFI_TURRET_ID = process.env.NEXT_PUBLIC_UNIFI_CAMERA_ID ?? "";
+
 // ── Turret camera ─────────────────────────────────────────────────────────────
 function TurretCamera() {
   const [src, setSrc] = useState<string | null>(null);
@@ -197,17 +219,28 @@ function TurretCamera() {
   const prevUrl = useRef<string | null>(null);
 
   const fetchSnap = useCallback(async () => {
-    const url = `${BASE}/api/cameras/snapshot/${process.env.NEXT_PUBLIC_UNIFI_CAMERA_ID ?? ""}?t=${Date.now()}`;
-    try {
-      const res = await fetch(url);
-      if (!res.ok) return;
-      const blob = await res.blob();
-      const objUrl = URL.createObjectURL(blob);
-      setSrc(objUrl);
-      setTs(new Date().toLocaleTimeString("en-GB"));
-      if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
-      prevUrl.current = objUrl;
-    } catch { /* ignore */ }
+    // Prefer direct UniFi API call; fall back to Railway proxy
+    let res: Response | null = null;
+    if (UNIFI_KEY && UNIFI_NVR && UNIFI_TURRET_ID) {
+      try {
+        res = await fetch(unifiUrl(`cameras/${UNIFI_TURRET_ID}/snapshot?ts=${Date.now()}`), {
+          headers: { "X-API-Key": UNIFI_KEY, Accept: "image/jpeg" },
+        });
+      } catch { res = null; }
+    }
+    if (!res || !res.ok) {
+      // Railway proxy fallback
+      try {
+        res = await fetch(`${BASE}/api/cameras/snapshot/${UNIFI_TURRET_ID}?t=${Date.now()}`);
+      } catch { return; }
+    }
+    if (!res || !res.ok) return;
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    setSrc(objUrl);
+    setTs(new Date().toLocaleTimeString("en-GB"));
+    if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
+    prevUrl.current = objUrl;
   }, []);
 
   useEffect(() => {
@@ -324,7 +357,7 @@ export default function CamerasPage() {
       </div>
 
       {/* Turret */}
-      {process.env.NEXT_PUBLIC_UNIFI_CAMERA_ID && (
+      {UNIFI_TURRET_ID && (
         <div className="max-w-lg">
           <TurretCamera />
         </div>
