@@ -127,19 +127,25 @@ function Energy({ rows, onLog }: { rows: EnergyRow[]; onLog: () => void }) {
   );
 
   // Build chart data with COP
+  // raw_data keys vary by device model — try common field names
+  function getVal(r: EnergyRow, ...keys: string[]): number {
+    for (const k of keys) { if (r[k] != null) return Number(r[k]); }
+    return 0;
+  }
+
   const chartData = rows.map((r, i) => {
     const prev = rows[i - 1];
     let cop: number | null = null;
     if (prev) {
-      const produced = (Number(r.energy_produced_kwh ?? 0) - Number(prev.energy_produced_kwh ?? 0));
-      const consumed = (Number(r.energy_consumed_kwh ?? 0) - Number(prev.energy_consumed_kwh ?? 0));
+      const produced = getVal(r, "energy_produced_kwh", "PRODUCED", "EQ") - getVal(prev, "energy_produced_kwh", "PRODUCED", "EQ");
+      const consumed = getVal(r, "energy_consumed_kwh", "CONSUMED", "EC") - getVal(prev, "energy_consumed_kwh", "CONSUMED", "EC");
       if (consumed > 0 && produced > 0) cop = Math.min(10, produced / consumed);
     }
     return {
-      time: new Date(String(r.ts)).toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+      time: new Date(String(r.timestamp ?? r.ts ?? "")).toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
       cop,
-      produced: Number(r.energy_produced_kwh ?? 0),
-      consumed: Number(r.energy_consumed_kwh ?? 0),
+      produced: getVal(r, "energy_produced_kwh", "PRODUCED", "EQ"),
+      consumed: getVal(r, "energy_consumed_kwh", "CONSUMED", "EC"),
     };
   }).filter((_, i) => i > 0);
 
