@@ -70,6 +70,7 @@ export const api = {
   // ── Heat Pump ────────────────────────────────────────────────────────────
   hpRealtime: () => apiFetch("/api/heatpump/realtime"),
   hpStatus: () => apiFetch("/api/heatpump/status"),
+  hpExplain: () => apiFetch("/api/heatpump/explain"),
   hpEnergy: (days = 30) => apiFetch(`/api/heatpump/energy?days=${days}`),
   hpEnergyLog: () => apiFetch("/api/heatpump/energy/log", { method: "POST" }),
   hpAlarms: () => apiFetch("/api/heatpump/alarms"),

@@ -5,7 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Thermometer, Droplets, Zap, AlertTriangle, ExternalLink, RefreshCw, Activity
+  Thermometer, Droplets, Zap, AlertTriangle, ExternalLink, RefreshCw, Activity, Sparkles, Loader2
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -222,6 +222,52 @@ function Alarms({ data }: { data: HpAlarms | null }) {
   );
 }
 
+// ── AI Insight panel ──────────────────────────────────────────────────────────
+function AiInsight() {
+  const [text, setText] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [ts, setTs] = useState<string | null>(null);
+
+  const fetch = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await api.hpExplain();
+      setText(r.explanation ?? null);
+      setTs(r.ts ?? null);
+    } catch {
+      setText("Could not load AI explanation.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetch(); }, [fetch]);
+
+  return (
+    <div className="rounded-xl border border-violet-500/30 bg-violet-500/5 px-4 py-3 mb-5">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-1.5 text-violet-300 text-xs font-medium">
+          <Sparkles className="h-3.5 w-3.5" />
+          AI Analysis
+        </div>
+        <div className="flex items-center gap-2">
+          {ts && <span className="text-xs text-muted-foreground">{new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</span>}
+          <button onClick={fetch} disabled={loading} className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
+            {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+          </button>
+        </div>
+      </div>
+      {loading && !text ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Analysing heat pump data…
+        </div>
+      ) : (
+        <p className="text-sm leading-relaxed text-foreground/90">{text ?? "—"}</p>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function HeatPumpPage() {
   const [realtime, setRealtime] = useState<HpRealtime | null>(null);
@@ -289,6 +335,9 @@ export default function HeatPumpPage() {
           <Metric label="Outdoor" value={temps?.["Outdoor Temperature"]?.value?.toFixed(1) ?? null} unit="°C" />
         </div>
       )}
+
+      {/* AI Insight — always shown, fetches independently */}
+      <AiInsight />
 
       {loading ? (
         <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-16 rounded-xl bg-muted/30 animate-pulse" />)}</div>
