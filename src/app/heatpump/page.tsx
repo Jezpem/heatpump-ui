@@ -126,26 +126,33 @@ function Energy({ rows, onLog }: { rows: EnergyRow[]; onLog: () => void }) {
     </div>
   );
 
-  // Build chart data with COP
-  // raw_data keys vary by device model — try common field names
-  function getVal(r: EnergyRow, ...keys: string[]): number {
-    for (const k of keys) { if (r[k] != null) return Number(r[k]); }
-    return 0;
+  // Detect which field is consumed/produced from actual data keys
+  // Ecoforest op 2126: ECCOP = total electricity consumed, EDCOP = total heat delivered
+  // Fall back to other common patterns
+  function detectKeys(sample: EnergyRow): { consumed: string | null; produced: string | null } {
+    const keys = Object.keys(sample);
+    const consumed = keys.find(k => k === "ECCOP") ?? keys.find(k => /consumed|CONSUMED|EC$/i.test(k)) ?? null;
+    const produced = keys.find(k => k === "EDCOP") ?? keys.find(k => /produced|PRODUCED|ED$/i.test(k)) ?? null;
+    return { consumed, produced };
   }
+
+  const { consumed: consumedKey, produced: producedKey } = rows.length > 0 ? detectKeys(rows[0]) : { consumed: null, produced: null };
 
   const chartData = rows.map((r, i) => {
     const prev = rows[i - 1];
     let cop: number | null = null;
-    if (prev) {
-      const produced = getVal(r, "energy_produced_kwh", "PRODUCED", "EQ") - getVal(prev, "energy_produced_kwh", "PRODUCED", "EQ");
-      const consumed = getVal(r, "energy_consumed_kwh", "CONSUMED", "EC") - getVal(prev, "energy_consumed_kwh", "CONSUMED", "EC");
-      if (consumed > 0 && produced > 0) cop = Math.min(10, produced / consumed);
+    let producedDelta = 0;
+    let consumedDelta = 0;
+    if (prev && consumedKey && producedKey) {
+      producedDelta = Math.max(0, Number(r[producedKey] ?? 0) - Number(prev[producedKey] ?? 0));
+      consumedDelta = Math.max(0, Number(r[consumedKey] ?? 0) - Number(prev[consumedKey] ?? 0));
+      if (consumedDelta > 0 && producedDelta > 0) cop = Math.min(10, producedDelta / consumedDelta);
     }
     return {
       time: new Date(String(r.timestamp ?? r.ts ?? "")).toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
       cop,
-      produced: getVal(r, "energy_produced_kwh", "PRODUCED", "EQ"),
-      consumed: getVal(r, "energy_consumed_kwh", "CONSUMED", "EC"),
+      produced: producedDelta,
+      consumed: consumedDelta,
     };
   }).filter((_, i) => i > 0);
 
