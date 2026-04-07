@@ -66,4 +66,24 @@ export const api = {
 
   /** Health check */
   health: () => apiFetch("/api/health"),
+
+  // ── Heat Pump ────────────────────────────────────────────────────────────
+  hpRealtime: () => apiFetch("/api/heatpump/realtime"),
+  hpStatus: () => apiFetch("/api/heatpump/status"),
+  hpEnergy: (days = 30) => apiFetch(`/api/heatpump/energy?days=${days}`),
+  hpEnergyLog: () => apiFetch("/api/heatpump/energy/log", { method: "POST" }),
+  hpAlarms: () => apiFetch("/api/heatpump/alarms"),
+
+  // ── Cameras ──────────────────────────────────────────────────────────────
+  cameraSnapshots: () => apiFetch("/api/cameras/snapshots"),
+  cameraSnap: (preset: number) => apiFetch(`/api/cameras/snap/${preset}`, { method: "POST" }),
+  cameraPtz: (type: string, payload: object, cameraId = "") =>
+    apiFetch("/api/cameras/ptz", { method: "POST", body: JSON.stringify({ type, payload, camera_id: cameraId }) }),
+  cameraSnapshotUrl: (camId: string) => `${BASE}/api/cameras/snapshot/${camId}`,
+
+  // ── Diagnostics ──────────────────────────────────────────────────────────
+  diagnostics: () => apiFetch("/api/diagnostics"),
+
+  // ── NeoHub ───────────────────────────────────────────────────────────────
+  neohubZones: () => apiFetch("/api/neohub/zones"),
 };

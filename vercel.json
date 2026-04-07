@@ -5,13 +5,27 @@
       "NEXT_PUBLIC_SUPABASE_URL": "https://zhxwyvrksrjrsohlyerc.supabase.co",
       "NEXT_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpoeHd5dnJrc3JqcnNvaGx5ZXJjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM0NzM1MDEsImV4cCI6MjA4OTA0OTUwMX0.mLSEWGWVYdz_NgW6sAUevJm7npwEEUk1UJLcPWHlvUg",
       "NEXT_PUBLIC_API_URL": "https://web-production-67061.up.railway.app",
-      "NEXT_PUBLIC_API_SECRET": ""
+      "NEXT_PUBLIC_API_SECRET": "",
+      "NEXT_PUBLIC_HP_TAILSCALE_URL": "",
+      "NEXT_PUBLIC_UNIFI_SHARE_URL": "",
+      "NEXT_PUBLIC_UNIFI_CAMERA_ID": "69bd08210041c203e406a51a",
+      "NEXT_PUBLIC_UNIFI_PRESET_0": "Overview",
+      "NEXT_PUBLIC_UNIFI_PRESET_1": "Gauges",
+      "NEXT_PUBLIC_UNIFI_PRESET_2": "Pumps",
+      "NEXT_PUBLIC_UNIFI_PRESET_3": "Buffer"
     }
   },
   "env": {
     "NEXT_PUBLIC_SUPABASE_URL": "https://zhxwyvrksrjrsohlyerc.supabase.co",
     "NEXT_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpoeHd5dnJrc3JqcnNvaGx5ZXJjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM0NzM1MDEsImV4cCI6MjA4OTA0OTUwMX0.mLSEWGWVYdz_NgW6sAUevJm7npwEEUk1UJLcPWHlvUg",
     "NEXT_PUBLIC_API_URL": "https://web-production-67061.up.railway.app",
-    "NEXT_PUBLIC_API_SECRET": ""
+    "NEXT_PUBLIC_API_SECRET": "",
+    "NEXT_PUBLIC_HP_TAILSCALE_URL": "",
+    "NEXT_PUBLIC_UNIFI_SHARE_URL": "",
+    "NEXT_PUBLIC_UNIFI_CAMERA_ID": "69bd08210041c203e406a51a",
+    "NEXT_PUBLIC_UNIFI_PRESET_0": "Overview",
+    "NEXT_PUBLIC_UNIFI_PRESET_1": "Gauges",
+    "NEXT_PUBLIC_UNIFI_PRESET_2": "Pumps",
+    "NEXT_PUBLIC_UNIFI_PRESET_3": "Buffer"
   }
 }
