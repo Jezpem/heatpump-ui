@@ -1,11 +1,12 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { api } from "@/lib/api";
-import { Settings, Save, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
+import { Settings, Save, RefreshCw, ChevronDown, ChevronRight, Thermometer } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { RoomStatus, TrvDetail } from "@/lib/supabase";
 
 // ── Shared form helpers ───────────────────────────────────────────────────────
 function NumInput({ label, value, onChange, step = 1, min, max }: {
@@ -264,6 +265,151 @@ function AiSettings() {
   );
 }
 
+// ── Valve Test tab ────────────────────────────────────────────────────────────
+const TEST_POSITIONS = [0, 25, 50, 75, 100];
+
+interface TrvRow {
+  room: string;
+  trv: TrvDetail;
+}
+
+function ValveTest() {
+  const [trvs, setTrvs] = useState<TrvRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState<Record<string, number | null>>({});
+  const [results, setResults] = useState<Record<string, string>>({});
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await api.rooms();
+      const rows: TrvRow[] = [];
+      for (const room of (data.rooms ?? []) as RoomStatus[]) {
+        for (const trv of room.trvs ?? []) {
+          rows.push({ room: room.name, trv });
+        }
+      }
+      setTrvs(rows);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load rooms");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function setValve(trv: TrvDetail, pos: number) {
+    const key = trv.device_id;
+    setSending(prev => ({ ...prev, [key]: pos }));
+    setResults(prev => ({ ...prev, [key]: "" }));
+    try {
+      await api.setValve(trv.device_id, pos, trv.name);
+      setResults(prev => ({ ...prev, [key]: `✓ Set to ${pos}%` }));
+      setTimeout(() => setResults(prev => ({ ...prev, [key]: "" })), 3000);
+    } catch (e: unknown) {
+      setResults(prev => ({ ...prev, [key]: `✗ ${e instanceof Error ? e.message : "Error"}` }));
+    } finally {
+      setSending(prev => ({ ...prev, [key]: null }));
+    }
+  }
+
+  if (loading) return (
+    <div className="space-y-3 max-w-2xl">
+      {[...Array(4)].map((_, i) => (
+        <div key={i} className="h-20 rounded-xl bg-muted/30 animate-pulse" />
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          Set individual TRV valve positions directly for testing. The automation will override these on the next cycle.
+        </p>
+        <Button size="sm" variant="outline" onClick={load} className="h-8 gap-1 flex-shrink-0">
+          <RefreshCw className="h-3 w-3" /> Refresh
+        </Button>
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-300">{error}</div>
+      )}
+
+      <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-300">
+        ⚠ Test mode — the heat engine will override these positions on its next cycle. Use for diagnostics only.
+      </div>
+
+      {trvs.length === 0 && !error && (
+        <p className="text-sm text-muted-foreground text-center py-10">No TRVs found. Check the automation is running and rooms are configured.</p>
+      )}
+
+      <div className="rounded-xl border border-border/50 bg-card overflow-hidden divide-y divide-border/30">
+        {trvs.map(({ room, trv }) => {
+          const key = trv.device_id;
+          const busy = sending[key] != null;
+          const result = results[key];
+          const isOk = result?.startsWith("✓");
+
+          return (
+            <div key={key} className="px-4 py-3.5">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className={`h-2 w-2 rounded-full flex-shrink-0 ${trv.connected ? "bg-green-400" : "bg-red-400"}`} />
+                    <span className="font-medium text-sm">{trv.name}</span>
+                    <Badge variant="outline" className="text-xs text-muted-foreground">{room}</Badge>
+                    {trv.battery != null && trv.battery <= 25 && (
+                      <Badge variant="outline" className="text-xs text-yellow-400 border-yellow-500/30">🔋 {trv.battery}%</Badge>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground pl-4">
+                    {trv.current_temp != null && (
+                      <span className="flex items-center gap-1">
+                        <Thermometer className="h-3 w-3" />{trv.current_temp.toFixed(1)}°
+                      </span>
+                    )}
+                    <span>Valve: <span className="font-medium text-foreground/80">{trv.valve_pct ?? "—"}%</span></span>
+                    {!trv.connected && <span className="text-red-400">Disconnected</span>}
+                  </div>
+                </div>
+                {result && (
+                  <span className={`text-xs font-medium flex-shrink-0 ${isOk ? "text-green-400" : "text-red-400"}`}>
+                    {result}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap pl-4">
+                {TEST_POSITIONS.map(pos => (
+                  <button
+                    key={pos}
+                    onClick={() => setValve(trv, pos)}
+                    disabled={busy || !trv.connected}
+                    className={[
+                      "min-w-[52px] rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
+                      trv.valve_pct === pos
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border/50 bg-background text-muted-foreground hover:border-border hover:text-foreground",
+                      (busy || !trv.connected) ? "opacity-40 cursor-not-allowed" : "cursor-pointer",
+                      busy && sending[key] === pos ? "opacity-60" : "",
+                    ].join(" ")}
+                  >
+                    {busy && sending[key] === pos ? "…" : `${pos}%`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function SettingsPage() {
   return (
@@ -276,11 +422,13 @@ export default function SettingsPage() {
       <Tabs defaultValue="heating">
         <TabsList className="mb-5">
           <TabsTrigger value="heating">Heating</TabsTrigger>
+          <TabsTrigger value="valves">Valve Test</TabsTrigger>
           <TabsTrigger value="cameras">Cameras</TabsTrigger>
           <TabsTrigger value="ai">AI</TabsTrigger>
         </TabsList>
 
         <TabsContent value="heating"><HeatingConfig /></TabsContent>
+        <TabsContent value="valves"><ValveTest /></TabsContent>
         <TabsContent value="cameras"><CameraSettings /></TabsContent>
         <TabsContent value="ai"><AiSettings /></TabsContent>
       </Tabs>
