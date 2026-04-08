@@ -218,12 +218,12 @@ function PingTool() {
               {(result.avg_ms as number) != null ? ` · ${result.avg_ms}ms avg` : ""}
             </span>
           </div>
-          {result.output && (
+          {result.output != null && (
             <pre className="text-muted-foreground whitespace-pre-wrap break-all leading-relaxed">
               {String(result.output)}
             </pre>
           )}
-          {result.error && <p className="text-red-400">{String(result.error)}</p>}
+          {result.error != null && <p className="text-red-400">{String(result.error)}</p>}
         </div>
       )}
 
