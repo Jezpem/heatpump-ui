@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Flame, Activity, BarChart2, Settings, ScrollText, Camera, Wrench, Thermometer, Menu, X } from "lucide-react";
+import { Flame, Activity, BarChart2, Settings, ScrollText, Camera, Wrench, Thermometer, Network, Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 
@@ -11,6 +11,7 @@ const links = [
   { href: "/plant-room",  label: "Plant Room", icon: Wrench },
   { href: "/cameras",     label: "Cameras",    icon: Camera },
   { href: "/thermostats", label: "Thermostats",icon: Thermometer },
+  { href: "/network",     label: "Network",    icon: Network },
   { href: "/log",         label: "AI Log",     icon: ScrollText },
   { href: "/history",     label: "History",    icon: BarChart2 },
   { href: "/settings",    label: "Settings",   icon: Settings },
