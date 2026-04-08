@@ -90,19 +90,22 @@ function Temperatures({ realtime }: { realtime: HpRealtime | null }) {
         <Metric label="DHW Cylinder" value={tank?.dhw_temp_c?.toFixed(1) ?? null} unit="°C"
           sub={tank?.dhw_setpoint_c != null ? `Setpoint ${tank.dhw_setpoint_c.toFixed(1)}°C` : undefined} />
       </div>
-      {/* Circuit temps */}
+      {/* Heating circuit temps */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Metric label="Flow (T1)" value={get("Flow Temperature")?.toFixed(1) ?? null} unit="°C" />
         <Metric label="Return (T2)" value={get("Return Temperature")?.toFixed(1) ?? null} unit="°C" />
         <Metric label="Outdoor" value={get("Outdoor Temperature")?.toFixed(1) ?? null} unit="°C" />
-        <Metric label="Compressor Suction" value={get("Compressor Suction Temp")?.toFixed(1) ?? null} unit="°C" />
+        <Metric label="Heating Outlet 2" value={get("Heating Circuit Outlet 2")?.toFixed(1) ?? null} unit="°C" />
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        <Metric label="Brine Pressure" value={get("Brine Pressure")?.toFixed(2) ?? null} unit=" bar"
-          warn={get("Brine Pressure") != null && (get("Brine Pressure")! < 1.5 || get("Brine Pressure")! > 3.5)} />
-        <Metric label="Heating Pressure" value={get("Heating Pressure")?.toFixed(2) ?? null} unit=" bar"
-          warn={get("Heating Pressure") != null && (get("Heating Pressure")! < 1.0 || get("Heating Pressure")! > 2.5)} />
-        <Metric label="Suction Pressure" value={get("Compressor Suction Pressure")?.toFixed(2) ?? null} unit=" bar" />
+      {/* Brine (ground loop) temps */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Metric label="Brine Inlet" value={get("Brine Inlet Temperature")?.toFixed(1) ?? null} unit="°C"
+          sub="from ground" />
+        <Metric label="Brine Outlet" value={get("Brine Outlet Temperature")?.toFixed(1) ?? null} unit="°C"
+          sub="to ground" />
+        {get("Brine Inlet Temperature") != null && get("Brine Outlet Temperature") != null && (
+          <Metric label="Brine ΔT" value={(get("Brine Inlet Temperature")! - get("Brine Outlet Temperature")!).toFixed(1)} unit="°C" />
+        )}
       </div>
     </div>
   );
