@@ -67,11 +67,12 @@ function fmtBytes(b: number) {
 }
 
 const GROUP_META: Record<string, { label: string; Icon: React.ElementType; color: string }> = {
-  infrastructure: { label: "Infrastructure",  Icon: Server,      color: "text-violet-400" },
-  heat_pump:      { label: "Heat Pump",        Icon: Activity,    color: "text-orange-400" },
-  cameras:        { label: "Cameras / NVR",    Icon: Camera,      color: "text-blue-400"   },
-  shelly:         { label: "Shelly Gateways",  Icon: Radio,       color: "text-green-400"  },
-  thermostats:    { label: "Thermostats",      Icon: Thermometer, color: "text-cyan-400"   },
+  infrastructure:  { label: "Infrastructure",   Icon: Server,      color: "text-violet-400" },
+  heat_pump:       { label: "Heat Pump",         Icon: Activity,    color: "text-orange-400" },
+  cameras:         { label: "Cameras / NVR",     Icon: Camera,      color: "text-blue-400"   },
+  shelly:          { label: "Shelly Gateways",   Icon: Radio,       color: "text-green-400"  },
+  home_assistant:  { label: "Home Assistant",    Icon: Network,     color: "text-rose-400"   },
+  thermostats:     { label: "Thermostats",       Icon: Thermometer, color: "text-cyan-400"   },
 };
 
 function StatusDot({ ok, ms }: { ok: boolean; ms?: number }) {
@@ -155,6 +156,7 @@ function PeerRow({ peer }: { peer: Peer }) {
 const KNOWN_HOSTS = [
   { label: "NVR (tvr)", host: "tvr.tail985db7.ts.net" },
   { label: "PTZ Camera", host: "10.10.200.81" },
+  { label: "Home Assistant", host: "10.10.200.49" },
   { label: "Shelly GW 1", host: "10.10.200.105" },
   { label: "Shelly GW 2", host: "10.10.200.114" },
   { label: "Shelly GW 3", host: "10.10.200.131" },
@@ -285,7 +287,7 @@ export default function NetworkPage() {
       )
     : [];
 
-  const groupOrder = ["infrastructure", "heat_pump", "cameras", "shelly", "thermostats"];
+  const groupOrder = ["infrastructure", "heat_pump", "cameras", "shelly", "home_assistant", "thermostats"];
   const sortedGroups = grouped.sort(([a], [b]) =>
     (groupOrder.indexOf(a) ?? 99) - (groupOrder.indexOf(b) ?? 99)
   );
