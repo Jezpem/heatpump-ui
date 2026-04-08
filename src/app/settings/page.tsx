@@ -265,6 +265,177 @@ function AiSettings() {
   );
 }
 
+// ── Diagnostics tab ───────────────────────────────────────────────────────────
+interface AutoState {
+  enabled?: boolean;
+  last_eval?: string | null;
+  next_eval?: string | null;
+  last_reasoning?: string;
+  last_suggestion?: string;
+  room_temps?: Record<string, number | null>;
+  shelly_last_error?: string | null;
+  last_shelly_zones?: Array<{ zone: string; current_temp: number | null; connected?: boolean }>;
+}
+
+function fmtTs(ts: string | null | undefined) {
+  if (!ts) return "—";
+  try {
+    return new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch { return ts; }
+}
+
+function Diagnostics() {
+  const [state, setState] = useState<AutoState | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [cycling, setCycling] = useState(false);
+  const [cycleMsg, setCycleMsg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pollCount, setPollCount] = useState(0);
+
+  const load = useCallback(async () => {
+    try {
+      const data: AutoState = await api.status();
+      setState(data);
+      setError(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load, pollCount]);
+
+  // Auto-refresh every 10s after forcing a cycle
+  useEffect(() => {
+    if (!cycling) return;
+    const t = setTimeout(() => { setPollCount(n => n + 1); setCycling(false); }, 10000);
+    return () => clearTimeout(t);
+  }, [cycling]);
+
+  async function forceCycle() {
+    setCycling(true);
+    setCycleMsg(null);
+    setError(null);
+    try {
+      const res = await api.cycle();
+      setCycleMsg(res.message ?? "Cycle triggered — refreshing in 10s…");
+    } catch (e: unknown) {
+      setCycleMsg(null);
+      setError(e instanceof Error ? e.message : "Cycle failed");
+      setCycling(false);
+    }
+  }
+
+  const roomTemps = state?.room_temps ?? {};
+  const shellyZones = state?.last_shelly_zones ?? [];
+  const noTemps = Object.values(roomTemps).every(t => t == null);
+  const hasError = !!state?.shelly_last_error;
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      {/* Wake / force cycle */}
+      <div className="rounded-xl border border-border/50 bg-card p-4 space-y-3">
+        <h2 className="font-medium text-sm">Force evaluation cycle</h2>
+        <p className="text-xs text-muted-foreground">
+          Wakes the automation thread immediately and forces a fresh Shelly gateway poll + AI decision. Normally runs every {" "}
+          {/* poll interval */} few minutes automatically.
+        </p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <Button
+            onClick={forceCycle}
+            disabled={cycling}
+            className="gap-2"
+          >
+            {cycling ? (
+              <><RefreshCw className="h-4 w-4 animate-spin" /> Running cycle…</>
+            ) : (
+              <><RefreshCw className="h-4 w-4" /> Wake up now</>
+            )}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setPollCount(n => n + 1)} className="h-8 gap-1">
+            <RefreshCw className="h-3 w-3" /> Refresh status
+          </Button>
+          {cycleMsg && <span className="text-xs text-green-400">{cycleMsg}</span>}
+          {error && <span className="text-xs text-red-400">{error}</span>}
+        </div>
+      </div>
+
+      {/* Cycle timing */}
+      <div className="rounded-xl border border-border/50 bg-card p-4 space-y-3">
+        <h2 className="font-medium text-sm">Cycle status</h2>
+        {loading ? (
+          <div className="h-16 bg-muted/30 rounded-lg animate-pulse" />
+        ) : (
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">Engine enabled</p>
+              <span className={`font-medium ${state?.enabled ? "text-green-400" : "text-red-400"}`}>
+                {state?.enabled ? "Yes" : "Disabled"}
+              </span>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">Last eval</p>
+              <span className="font-mono text-xs">{fmtTs(state?.last_eval)}</span>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">Next eval</p>
+              <span className="font-mono text-xs">{fmtTs(state?.next_eval)}</span>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">Room temps</p>
+              <span className={`font-medium text-xs ${noTemps ? "text-red-400" : "text-green-400"}`}>
+                {noTemps ? "None received" : `${Object.values(roomTemps).filter(t => t != null).length} / ${Object.keys(roomTemps).length} rooms`}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Shelly gateway */}
+      <div className="rounded-xl border border-border/50 bg-card p-4 space-y-3">
+        <h2 className="font-medium text-sm">Shelly gateway</h2>
+        {hasError && (
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5 text-xs text-red-300 font-mono break-all">
+            {state?.shelly_last_error}
+          </div>
+        )}
+        {!hasError && shellyZones.length === 0 && (
+          <p className="text-xs text-amber-400">No TRV zones received — gateway may be unreachable.</p>
+        )}
+        {shellyZones.length > 0 && (
+          <div className="divide-y divide-border/30 rounded-lg border border-border/40 overflow-hidden">
+            {shellyZones.map(z => (
+              <div key={z.zone} className="flex items-center justify-between px-3 py-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className={`h-1.5 w-1.5 rounded-full ${z.connected !== false ? "bg-green-400" : "bg-red-400"}`} />
+                  <span>{z.zone}</span>
+                </div>
+                <span className={z.current_temp != null ? "text-foreground/80" : "text-muted-foreground/50"}>
+                  {z.current_temp != null ? `${z.current_temp.toFixed(1)}°` : "no temp"}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {!hasError && !loading && (
+          <p className="text-xs text-muted-foreground">
+            If temperatures are missing, check Tailscale is routing the gateway subnet (10.10.200.0/24) and the BluTRV devices are connected via Bluetooth.
+          </p>
+        )}
+      </div>
+
+      {/* Last AI reasoning */}
+      {state?.last_reasoning && (
+        <div className="rounded-xl border border-border/50 bg-card p-4 space-y-2">
+          <h2 className="font-medium text-sm">Last AI reasoning</h2>
+          <p className="text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed">{state.last_reasoning}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Valve Test tab ────────────────────────────────────────────────────────────
 const TEST_POSITIONS = [0, 25, 50, 75, 100];
 
@@ -422,12 +593,14 @@ export default function SettingsPage() {
       <Tabs defaultValue="heating">
         <TabsList className="mb-5">
           <TabsTrigger value="heating">Heating</TabsTrigger>
+          <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
           <TabsTrigger value="valves">Valve Test</TabsTrigger>
           <TabsTrigger value="cameras">Cameras</TabsTrigger>
           <TabsTrigger value="ai">AI</TabsTrigger>
         </TabsList>
 
         <TabsContent value="heating"><HeatingConfig /></TabsContent>
+        <TabsContent value="diagnostics"><Diagnostics /></TabsContent>
         <TabsContent value="valves"><ValveTest /></TabsContent>
         <TabsContent value="cameras"><CameraSettings /></TabsContent>
         <TabsContent value="ai"><AiSettings /></TabsContent>
