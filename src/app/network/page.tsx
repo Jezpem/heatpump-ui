@@ -153,7 +153,7 @@ function PeerRow({ peer }: { peer: Peer }) {
 }
 
 const KNOWN_HOSTS = [
-  { label: "NVR (tvr)", host: "tvr" },
+  { label: "NVR (tvr)", host: "tvr.tail985db7.ts.net" },
   { label: "PTZ Camera", host: "10.10.200.81" },
   { label: "Shelly GW 1", host: "10.10.200.105" },
   { label: "Shelly GW 2", host: "10.10.200.114" },
