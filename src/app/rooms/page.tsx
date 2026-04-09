@@ -76,11 +76,6 @@ interface FullConfig {
   [key: string]: unknown;
 }
 
-interface HistoryRow {
-  ts: string;
-  zone_name: string;
-  current_temp_c: number | null;
-}
 
 // ── Phase styles ──────────────────────────────────────────────────────────────
 const PHASE: Record<string, { dot: string; badge: string; label: string }> = {
@@ -103,82 +98,60 @@ function isInNightWindow(minuteOfDay: number, parkTime: string, nightEnd: string
   return minuteOfDay >= park || minuteOfDay < end;
 }
 
-// ── Prediction builder ────────────────────────────────────────────────────────
-interface PredPoint { timeMs: number; predictedTemp: number; predictedValve: number; isNight: boolean; }
+// ── 24h schedule chart builder ────────────────────────────────────────────────
+// Shows what the valves and boiler will actually do over 24h based on schedule.
+// No temperature prediction — schedule is deterministic; temperature is not.
+interface SchedulePoint {
+  timeMs: number;
+  label: string;
+  valvePct: number;      // Predicted valve position %
+  boilerSetpoint: number; // Nest setpoint the engine will target
+  nightBand?: number;    // Present during night window (for shaded area)
+  boostBand?: number;    // Present during boost window (for shaded area)
+}
 
-function buildPrediction(room: Room, cfg: RoomCfg, startTemp: number, nowMs: number): PredPoint[] {
+function buildScheduleChart(room: Room, cfg: RoomCfg, nowMs: number): SchedulePoint[] {
   const STEP_MIN = 15;
-  const STEPS = 48;
-  const points: PredPoint[] = [];
-  let temp = startTemp;
+  const STEPS = 24 * 60 / STEP_MIN;   // full 24 hours forward
+  const points: SchedulePoint[] = [];
+
+  const boostTime  = cfg.morning_boost_time ? parseHHMM(cfg.morning_boost_time) : null;
+  const boostTemp  = cfg.morning_boost_temp_c  ?? 21;
+  const boostDurMin = cfg.morning_boost_duration_min ?? 60;
+  const nightEndMin = parseHHMM(cfg.night_end ?? "06:00");
 
   for (let i = 0; i <= STEPS; i++) {
-    const ms = nowMs + i * STEP_MIN * 60_000;
-    const d = new Date(ms);
-    const minuteOfDay = d.getHours() * 60 + d.getMinutes();
-    const night = room.park_at_night && isInNightWindow(minuteOfDay, cfg.park_time, cfg.night_end);
+    const ms  = nowMs + i * STEP_MIN * 60_000;
+    const d   = new Date(ms);
+    const min = d.getHours() * 60 + d.getMinutes();
+    const night = room.park_at_night && isInNightWindow(min, cfg.park_time ?? "18:55", cfg.night_end ?? "06:00");
 
-    const target = night ? cfg.target_temp_c : cfg.day_target_temp_c;
-    const rate = night ? -0.075 : temp < target ? 0.2 : -0.05;
-
-    temp = Math.max(
-      cfg.target_temp_c - 1,
-      Math.min(cfg.max_temp_c, temp + (temp < target ? Math.abs(rate) : rate))
+    // Boost window: starts at boostTime (or nightEnd if not set), lasts boostDurMin
+    const boostStart = boostTime ?? nightEndMin;
+    const boostEnd   = (boostStart + boostDurMin) % 1440;
+    const inBoost = !night && (
+      boostEnd > boostStart
+        ? min >= boostStart && min < boostEnd
+        : min >= boostStart || min < boostEnd
     );
 
-    const predictedValve = night
-      ? cfg.night_pos_pct
-      : temp < target
-        ? Math.round(Math.min(100, 20 + ((target - temp) / Math.max(1, target - cfg.target_temp_c)) * 80))
-        : cfg.min_pos_pct;
+    const valvePct = night
+      ? (cfg.night_pos_pct ?? 5)
+      : (cfg.min_pos_pct ?? 5);          // AI may open further; min is the floor
 
-    points.push({ timeMs: ms, predictedTemp: parseFloat(temp.toFixed(2)), predictedValve, isNight: night });
-  }
-  return points;
-}
-
-// ── Chart data builder ────────────────────────────────────────────────────────
-interface ChartPoint {
-  timeMs: number; label: string;
-  histTemp?: number; predTemp?: number; predValve?: number; nightBand?: number;
-}
-
-function buildChartData(room: Room, cfg: RoomCfg, history: HistoryRow[], nowMs: number): ChartPoint[] {
-  const trvNames = new Set(room.shelly_zones.map(z => z.toLowerCase()));
-  const relevant = history.filter(r => trvNames.has(r.zone_name.toLowerCase()) && r.current_temp_c != null);
-
-  const BUCKET = 15 * 60_000;
-  const buckets: Record<number, number[]> = {};
-  for (const row of relevant) {
-    const t = new Date(row.ts).getTime();
-    const key = Math.floor(t / BUCKET) * BUCKET;
-    (buckets[key] ??= []).push(row.current_temp_c!);
-  }
-
-  const startMs = nowMs - 12 * 60 * 60_000;
-  const endMs   = nowMs + 12 * 60 * 60_000;
-  const prediction = buildPrediction(room, cfg, room.current_temp ?? cfg.day_target_temp_c, nowMs);
-  const predMap = new Map(prediction.map(p => [Math.floor(p.timeMs / BUCKET) * BUCKET, p]));
-
-  const points: ChartPoint[] = [];
-  for (let t = startMs; t <= endMs; t += BUCKET) {
-    const bucket = Math.floor(t / BUCKET) * BUCKET;
-    const d = new Date(t);
-    const label = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-    const minuteOfDay = d.getHours() * 60 + d.getMinutes();
-    const night = room.park_at_night && isInNightWindow(minuteOfDay, cfg.park_time, cfg.night_end);
-
-    const avgHist = buckets[bucket]?.length
-      ? buckets[bucket].reduce((a, b) => a + b, 0) / buckets[bucket].length
-      : undefined;
-    const pred = predMap.get(bucket);
+    const boilerSetpoint = night
+      ? (cfg.nest_idle_temp_c ?? 15)
+      : inBoost
+        ? boostTemp
+        : (cfg.day_target_temp_c ?? 21);
 
     points.push({
-      timeMs: t, label,
-      histTemp:  t <= nowMs && avgHist != null ? parseFloat(avgHist.toFixed(2)) : undefined,
-      predTemp:  t >= nowMs ? pred?.predictedTemp : undefined,
-      predValve: t >= nowMs ? pred?.predictedValve : undefined,
-      nightBand: night ? cfg.max_temp_c : undefined,
+      timeMs: ms,
+      label: d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+      valvePct,
+      boilerSetpoint,
+      nightBand: night ? 100 : undefined,
+      boostBand: inBoost ? 100 : undefined,
     });
   }
   return points;
@@ -187,13 +160,15 @@ function buildChartData(room: Room, cfg: RoomCfg, history: HistoryRow[], nowMs: 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
 function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: { name: string; value: number; color: string }[]; label?: string }) {
   if (!active || !payload?.length) return null;
+  const relevant = payload.filter(p => p.name !== "Night" && p.name !== "Boost");
+  if (!relevant.length) return null;
   return (
     <div className="rounded-lg border border-border bg-card px-3 py-2 text-xs space-y-1 shadow-lg">
       <p className="font-medium text-muted-foreground">{label}</p>
-      {payload.map(p => (
+      {relevant.map(p => (
         <p key={p.name} style={{ color: p.color }}>
-          {p.name}: {typeof p.value === "number" ? p.value.toFixed(1) : p.value}
-          {p.name.toLowerCase().includes("valve") ? "%" : "°C"}
+          {p.name}: {typeof p.value === "number" ? p.value.toFixed(p.name === "Valve" ? 0 : 1) : p.value}
+          {p.name === "Valve" ? "%" : "°C"}
         </p>
       ))}
     </div>
@@ -390,12 +365,11 @@ function SettingsPanel({
 
 // ── Room card ─────────────────────────────────────────────────────────────────
 function RoomCard({
-  room, cfg, history, isNight, globalBoostTime, globalBoostTemp, globalBoostDur,
+  room, cfg, isNight, globalBoostTime, globalBoostTemp, globalBoostDur,
   onCfgChange, onSave, saving, saved,
 }: {
   room: Room;
   cfg: RoomCfg;
-  history: HistoryRow[];
   isNight: boolean;
   globalBoostTime: string;
   globalBoostTemp: number;
@@ -416,12 +390,9 @@ function RoomCard({
     : "text-blue-400";
 
   const nowMs = Date.now();
-  const chartData = buildChartData(room, cfg, history, nowMs);
+  const chartData = buildScheduleChart(room, cfg, nowMs);
 
   const xTicks = chartData.filter((_, i) => i % 8 === 0).map(p => p.timeMs);
-  const histTemps = chartData.filter(p => p.histTemp != null).map(p => p.histTemp!);
-  const yMin = Math.floor(Math.min(cfg.target_temp_c - 1, ...(histTemps.length ? histTemps : [cfg.target_temp_c])) - 0.5);
-  const yMax = Math.ceil(cfg.max_temp_c + 0.5);
   const nowBucket = Math.floor(nowMs / (15 * 60_000)) * (15 * 60_000);
 
   // Schedule pills
@@ -476,50 +447,61 @@ function RoomCard({
         <div className="px-4 pb-3"><TrvStrip trvs={room.trvs} /></div>
       )}
 
-      {/* Chart */}
+      {/* 24h Schedule Chart */}
       <div className="px-4 pb-2">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
-          24h Temperature · History + Prediction
+          24h Schedule · Valve position &amp; boiler demand
         </p>
-        <ResponsiveContainer width="100%" height={200}>
-          <ComposedChart data={chartData} margin={{ top: 4, right: 32, bottom: 0, left: -10 }}>
+        <ResponsiveContainer width="100%" height={180}>
+          <ComposedChart data={chartData} margin={{ top: 4, right: 36, bottom: 0, left: -10 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
             <XAxis
               dataKey="timeMs" type="number" domain={["dataMin", "dataMax"]} ticks={xTicks}
               tickFormatter={ms => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
               tick={{ fontSize: 9, fill: "rgba(255,255,255,0.35)" }}
             />
-            <YAxis domain={[yMin, yMax]} tick={{ fontSize: 9, fill: "rgba(255,255,255,0.35)" }} tickFormatter={v => `${v}°`} />
-            <YAxis yAxisId="right" orientation="right" domain={[0, 100]}
-              tick={{ fontSize: 9, fill: "rgba(52,211,153,0.4)" }} tickFormatter={v => `${v}%`} width={28} />
+            {/* Left axis: valve % */}
+            <YAxis yAxisId="valve" domain={[0, 100]}
+              tick={{ fontSize: 9, fill: "rgba(52,211,153,0.6)" }} tickFormatter={v => `${v}%`} width={28} />
+            {/* Right axis: boiler setpoint °C */}
+            <YAxis yAxisId="boiler" orientation="right" domain={[12, 28]}
+              tick={{ fontSize: 9, fill: "rgba(251,146,60,0.6)" }} tickFormatter={v => `${v}°`} width={28} />
             <Tooltip content={<ChartTooltip />} />
 
-            <Area dataKey="nightBand" fill="rgba(99,179,237,0.08)" stroke="none"
-              legendType="none" isAnimationActive={false} dot={false} activeDot={false} />
+            {/* Night shading */}
+            <Area yAxisId="valve" dataKey="nightBand" name="Night"
+              fill="rgba(99,179,237,0.07)" stroke="none"
+              isAnimationActive={false} dot={false} activeDot={false} />
 
-            <ReferenceLine y={cfg.day_target_temp_c} stroke="rgba(251,146,60,0.5)" strokeDasharray="4 3"
-              label={{ value: `Day ${cfg.day_target_temp_c}°`, position: "insideTopRight", fontSize: 9, fill: "rgba(251,146,60,0.7)" }} />
-            <ReferenceLine y={cfg.target_temp_c} stroke="rgba(96,165,250,0.5)" strokeDasharray="4 3"
-              label={{ value: `Night ${cfg.target_temp_c}°`, position: "insideBottomRight", fontSize: 9, fill: "rgba(96,165,250,0.7)" }} />
-            <ReferenceLine y={cfg.max_temp_c} stroke="rgba(248,113,113,0.4)" strokeDasharray="2 4"
-              label={{ value: `Max ${cfg.max_temp_c}°`, position: "insideTopRight", fontSize: 9, fill: "rgba(248,113,113,0.6)" }} />
-            <ReferenceLine x={nowBucket} stroke="rgba(255,255,255,0.25)" strokeDasharray="3 3"
+            {/* Boost shading */}
+            <Area yAxisId="valve" dataKey="boostBand" name="Boost"
+              fill="rgba(251,146,60,0.08)" stroke="none"
+              isAnimationActive={false} dot={false} activeDot={false} />
+
+            {/* "Now" line */}
+            <ReferenceLine yAxisId="valve" x={nowBucket} stroke="rgba(255,255,255,0.25)" strokeDasharray="3 3"
               label={{ value: "Now", position: "insideTopLeft", fontSize: 9, fill: "rgba(255,255,255,0.4)" }} />
 
-            <Line dataKey="histTemp" name="Actual" stroke="#f97316" strokeWidth={2}
-              dot={false} connectNulls isAnimationActive={false} />
-            <Line dataKey="predTemp" name="Predicted" stroke="#f97316" strokeWidth={1.5}
-              strokeDasharray="5 4" dot={false} connectNulls isAnimationActive={false} opacity={0.6} />
-            <Line dataKey="predValve" name="Pred valve" stroke="rgba(52,211,153,0.5)"
-              strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls isAnimationActive={false} yAxisId="right" />
+            {/* Valve position — step line */}
+            <Line yAxisId="valve" dataKey="valvePct" name="Valve"
+              stroke="rgba(52,211,153,0.9)" strokeWidth={2}
+              dot={false} connectNulls isAnimationActive={false}
+              type="stepAfter" />
+
+            {/* Boiler setpoint */}
+            <Line yAxisId="boiler" dataKey="boilerSetpoint" name="Boiler setpoint"
+              stroke="rgba(251,146,60,0.85)" strokeWidth={1.5}
+              strokeDasharray="5 3"
+              dot={false} connectNulls isAnimationActive={false}
+              type="stepAfter" />
           </ComposedChart>
         </ResponsiveContainer>
 
         <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-orange-400 rounded" />Actual</span>
-          <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-orange-400/50 rounded" />Predicted</span>
-          <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-teal-400/50 rounded" />Valve %</span>
+          <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-teal-400 rounded" />Valve %</span>
+          <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-orange-400/70 rounded border-dashed" style={{borderBottom:"1px dashed rgba(251,146,60,0.7)",height:0}} />Boiler setpoint</span>
           <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 bg-blue-400/10 rounded-sm border border-blue-400/20" />Night</span>
+          <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 bg-orange-400/10 rounded-sm border border-orange-400/20" />Boost</span>
         </div>
       </div>
 
@@ -580,7 +562,6 @@ export default function RoomsPage() {
   const [fullConfig, setFullConfig] = useState<FullConfig | null>(null);
   const [localCfgs, setLocalCfgs] = useState<Record<string, RoomCfg>>({});
   const [globalBoost, setGlobalBoost] = useState({ time: "07:00", temp: 21, dur: 60 });
-  const [history, setHistory] = useState<HistoryRow[]>([]);
   const [isNight, setIsNight] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -590,14 +571,13 @@ export default function RoomsPage() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [roomsData, histData, cfgData] = await Promise.allSettled([
-        api.rooms(), api.history(12), api.config(),
+      const [roomsData, cfgData] = await Promise.allSettled([
+        api.rooms(), api.config(),
       ]);
       if (roomsData.status === "fulfilled") {
         setRooms((roomsData.value.rooms ?? []).filter((r: Room) => r.enabled));
         setIsNight(roomsData.value.is_night ?? false);
       }
-      if (histData.status === "fulfilled") setHistory(histData.value.rows ?? []);
       if (cfgData.status === "fulfilled") {
         const cfg: FullConfig = cfgData.value.config ?? cfgData.value;
         setFullConfig(cfg);
@@ -720,7 +700,6 @@ export default function RoomsPage() {
                 key={room.name}
                 room={room}
                 cfg={cfg}
-                history={history}
                 isNight={isNight}
                 globalBoostTime={globalBoost.time}
                 globalBoostTemp={globalBoost.temp}
