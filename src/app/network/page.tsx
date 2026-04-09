@@ -8,9 +8,14 @@ import {
 } from "lucide-react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
+const SECRET = process.env.NEXT_PUBLIC_API_SECRET ?? "";
+const AUTH_HEADERS: HeadersInit = {
+  "Content-Type": "application/json",
+  ...(SECRET ? { Authorization: `Bearer ${SECRET}` } : {}),
+};
 
 async function apiFetch(path: string) {
-  const r = await fetch(`${BASE}${path}`);
+  const r = await fetch(`${BASE}${path}`, { headers: AUTH_HEADERS });
   if (!r.ok) throw new Error(`${r.status}`);
   return r.json();
 }
@@ -177,7 +182,7 @@ function PingTool() {
     try {
       const r = await fetch(`${BASE}/api/network/ping`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: AUTH_HEADERS,
         body: JSON.stringify({ host: host.trim(), count: 3, use_tailscale: useTailscale }),
       });
       setResult(await r.json());

@@ -289,7 +289,10 @@ function TurretCamera() {
     // Railway proxy fallback
     try {
       const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
-      const r = await fetch(`${BASE}/api/cameras/snapshot/${UNIFI_TURRET_ID}?t=${Date.now()}`);
+      const SEC = process.env.NEXT_PUBLIC_API_SECRET ?? "";
+      const r = await fetch(`${BASE}/api/cameras/snapshot/${UNIFI_TURRET_ID}?t=${Date.now()}`, {
+        headers: SEC ? { Authorization: `Bearer ${SEC}` } : {},
+      });
       if (!r.ok) return;
       const blob = await r.blob();
       const objUrl = URL.createObjectURL(blob);
