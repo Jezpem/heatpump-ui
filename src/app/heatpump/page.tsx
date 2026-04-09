@@ -32,7 +32,13 @@ function Metric({ label, value, unit, sub, warn }: {
 type HpStatus = {
   alarm_active: boolean; alarm_text: string | null;
   heating: { enabled: boolean; setpoint_c: number | null; cutoff_c: number | null };
-  dhw: { enabled: boolean; setpoint_c: number | null; recirculation_c: number | null };
+  dhw: {
+    enabled: boolean;
+    setpoint_c: number | null;
+    recirculation_enabled: boolean;
+    recirculation_c: number | null;
+    recirculation_delta: number | null;
+  };
   cooling: { enabled: boolean };
   ts: string;
 };
@@ -43,8 +49,16 @@ type HpRealtime = {
   ts: string;
 };
 
-function Overview({ status }: { status: HpStatus | null }) {
+function Overview({ status, dhwTemp }: { status: HpStatus | null; dhwTemp: number | null }) {
   if (!status) return <p className="text-muted-foreground text-sm">Loading…</p>;
+  const recirc = status.dhw;
+  const recircOn = recirc?.recirculation_enabled;
+  // Recirculation is "actively circulating" when DHW temp has dropped below (setpoint - delta)
+  const recircSetpoint = recirc?.recirculation_c ?? null;
+  const recircDelta = recirc?.recirculation_delta ?? null;
+  const triggerTemp = recircSetpoint != null && recircDelta != null ? recircSetpoint - recircDelta : null;
+  const isCirculating = dhwTemp != null && triggerTemp != null && dhwTemp <= triggerTemp;
+
   return (
     <div className="space-y-4">
       {status.alarm_active && (
@@ -53,6 +67,8 @@ function Overview({ status }: { status: HpStatus | null }) {
           <span>{status.alarm_text}</span>
         </div>
       )}
+
+      {/* Mode cards */}
       <div className="grid grid-cols-3 gap-3">
         <div className={`rounded-xl border px-4 py-3 ${status.heating?.enabled ? "border-orange-500/30 bg-orange-500/10" : "border-border/40 bg-muted/20"}`}>
           <p className="text-xs text-muted-foreground">Heating</p>
@@ -67,6 +83,59 @@ function Overview({ status }: { status: HpStatus | null }) {
         <div className={`rounded-xl border px-4 py-3 ${status.cooling?.enabled ? "border-cyan-500/30 bg-cyan-500/10" : "border-border/40 bg-muted/20"}`}>
           <p className="text-xs text-muted-foreground">Cooling</p>
           <p className="font-semibold mt-1">{status.cooling?.enabled ? "On" : "Off"}</p>
+        </div>
+      </div>
+
+      {/* Recirculation panel */}
+      <div className={`rounded-xl border px-4 py-4 ${
+        recircOn
+          ? isCirculating
+            ? "border-teal-400/40 bg-teal-500/10"
+            : "border-teal-500/20 bg-teal-500/5"
+          : "border-border/40 bg-muted/20"
+      }`}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Droplets className={`h-4 w-4 ${recircOn ? "text-teal-400" : "text-muted-foreground"}`} />
+            <p className="text-sm font-medium">Hot Water Recirculation</p>
+          </div>
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+            recircOn
+              ? isCirculating
+                ? "bg-teal-500/20 text-teal-300"
+                : "bg-teal-500/10 text-teal-400"
+              : "bg-muted/40 text-muted-foreground"
+          }`}>
+            {recircOn ? (isCirculating ? "Circulating" : "Standby") : "Disabled"}
+          </span>
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <p className="text-xs text-muted-foreground">Current DHW</p>
+            <p className="text-xl font-semibold tabular-nums mt-0.5">
+              {dhwTemp != null ? `${dhwTemp.toFixed(1)}°C` : "—"}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Recirc Setpoint</p>
+            <p className="text-xl font-semibold tabular-nums mt-0.5">
+              {recircSetpoint != null ? `${recircSetpoint.toFixed(1)}°C` : "—"}
+            </p>
+            {recircDelta != null && (
+              <p className="text-xs text-muted-foreground">±{recircDelta.toFixed(1)}°C band</p>
+            )}
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Triggers below</p>
+            <p className="text-xl font-semibold tabular-nums mt-0.5">
+              {triggerTemp != null ? `${triggerTemp.toFixed(1)}°C` : "—"}
+            </p>
+            {dhwTemp != null && triggerTemp != null && (
+              <p className={`text-xs mt-0.5 ${dhwTemp <= triggerTemp ? "text-teal-400" : "text-muted-foreground"}`}>
+                {dhwTemp <= triggerTemp ? "Below trigger" : `${(dhwTemp - triggerTemp).toFixed(1)}°C above`}
+              </p>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -329,11 +398,13 @@ export default function HeatPumpPage() {
 
       {/* Top metrics strip */}
       {!loading && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-5">
           <Metric label="Buffer Tank" value={tank?.buffer_temp_c?.toFixed(1) ?? null} unit="°C"
             sub={tank?.buffer_setpoint_c != null ? `→ ${tank.buffer_setpoint_c.toFixed(1)}°C` : undefined} />
           <Metric label="DHW Cylinder" value={tank?.dhw_temp_c?.toFixed(1) ?? null} unit="°C"
             sub={tank?.dhw_setpoint_c != null ? `→ ${tank.dhw_setpoint_c.toFixed(1)}°C` : undefined} />
+          <Metric label="Recirc Setpoint" value={status?.dhw?.recirculation_c?.toFixed(1) ?? null} unit="°C"
+            sub={status?.dhw?.recirculation_enabled ? "Enabled" : "Disabled"} />
           <Metric label="Flow → Return ΔT" value={dT} unit="°C" />
           <Metric label="Outdoor" value={temps?.["Outdoor Temperature"]?.value?.toFixed(1) ?? null} unit="°C" />
         </div>
@@ -354,7 +425,7 @@ export default function HeatPumpPage() {
             {hpUrl && <TabsTrigger value="native">Native UI</TabsTrigger>}
           </TabsList>
 
-          <TabsContent value="overview"><Overview status={status} /></TabsContent>
+          <TabsContent value="overview"><Overview status={status} dhwTemp={tank?.dhw_temp_c ?? null} /></TabsContent>
           <TabsContent value="temperatures"><Temperatures realtime={realtime} /></TabsContent>
           <TabsContent value="energy"><Energy rows={energyRows} onLog={fetchAll} /></TabsContent>
           <TabsContent value="alarms"><Alarms data={alarms} /></TabsContent>
