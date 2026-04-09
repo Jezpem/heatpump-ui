@@ -559,13 +559,13 @@ function ValveTest() {
                   <button
                     key={pos}
                     onClick={() => setValve(trv, pos)}
-                    disabled={busy || !trv.connected}
+                    disabled={busy}
                     className={[
                       "min-w-[52px] rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
                       trv.valve_pct === pos
                         ? "border-primary bg-primary text-primary-foreground"
                         : "border-border/50 bg-background text-muted-foreground hover:border-border hover:text-foreground",
-                      (busy || !trv.connected) ? "opacity-40 cursor-not-allowed" : "cursor-pointer",
+                      busy ? "opacity-40 cursor-not-allowed" : "cursor-pointer",
                       busy && sending[key] === pos ? "opacity-60" : "",
                     ].join(" ")}
                   >

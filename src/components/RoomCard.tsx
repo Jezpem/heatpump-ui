@@ -147,7 +147,7 @@ export function RoomCard({ room, isNight, onValveSet }: Props) {
                       min={0}
                       max={100}
                       step={5}
-                      disabled={!canMoveValves || !trv.connected}
+                      disabled={!canMoveValves}
                       onValueChange={(val) => handleSlider(trv, val)}
                       className={!canMoveValves ? "opacity-40" : ""}
                     />
