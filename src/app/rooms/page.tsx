@@ -5,9 +5,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid,
-  Tooltip, ReferenceLine, ResponsiveContainer, Legend,
+  Tooltip, ReferenceLine, ResponsiveContainer,
 } from "recharts";
-import { RefreshCw, Thermometer, BatteryLow, Wifi, WifiOff, LayoutGrid } from "lucide-react";
+import {
+  RefreshCw, Thermometer, BatteryLow, Wifi, WifiOff,
+  LayoutGrid, Settings2, Save, ChevronDown, ChevronRight,
+} from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface TrvDetail {
@@ -41,6 +44,25 @@ interface Room {
   shelly_zones: string[];
 }
 
+/** Editable per-room config fields (mirrors backend RoomConfig) */
+interface RoomCfg {
+  name: string;
+  day_target_temp_c: number;
+  target_temp_c: number;       // night target
+  max_temp_c: number;
+  min_pos_pct: number;
+  night_pos_pct: number;
+  park_time: string;
+  night_end: string;
+  nest_idle_temp_c?: number;
+  [key: string]: unknown;
+}
+
+interface FullConfig {
+  rooms: RoomCfg[];
+  [key: string]: unknown;
+}
+
 interface HistoryRow {
   ts: string;
   zone_name: string;
@@ -57,30 +79,23 @@ const PHASE: Record<string, { dot: string; badge: string; label: string }> = {
 
 // ── Schedule helpers ──────────────────────────────────────────────────────────
 function parseHHMM(s: string): number {
-  const [h, m] = s.split(":").map(Number);
-  return h * 60 + m;
+  const [h, m] = (s || "00:00").split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
 }
 
-/** Returns true if minuteOfDay falls in the park window (park_time → night_end, wrapping midnight) */
 function isInNightWindow(minuteOfDay: number, parkTime: string, nightEnd: string): boolean {
   const park = parseHHMM(parkTime);
   const end  = parseHHMM(nightEnd);
   if (park < end) return minuteOfDay >= park && minuteOfDay < end;
-  // wraps midnight (most common: park 18:55 → end 06:00)
   return minuteOfDay >= park || minuteOfDay < end;
 }
 
 // ── Prediction builder ────────────────────────────────────────────────────────
-interface PredPoint {
-  timeMs: number;
-  predictedTemp: number;
-  predictedValve: number;
-  isNight: boolean;
-}
+interface PredPoint { timeMs: number; predictedTemp: number; predictedValve: number; isNight: boolean; }
 
-function buildPrediction(room: Room, startTemp: number, nowMs: number): PredPoint[] {
+function buildPrediction(room: Room, cfg: RoomCfg, startTemp: number, nowMs: number): PredPoint[] {
   const STEP_MIN = 15;
-  const STEPS = 48; // 12 hours
+  const STEPS = 48;
   const points: PredPoint[] = [];
   let temp = startTemp;
 
@@ -88,25 +103,21 @@ function buildPrediction(room: Room, startTemp: number, nowMs: number): PredPoin
     const ms = nowMs + i * STEP_MIN * 60_000;
     const d = new Date(ms);
     const minuteOfDay = d.getHours() * 60 + d.getMinutes();
-    const night = room.park_at_night && isInNightWindow(minuteOfDay, room.park_time, room.night_end);
+    const night = room.park_at_night && isInNightWindow(minuteOfDay, cfg.park_time, cfg.night_end);
 
-    const target = night ? room.night_target_temp_c : room.day_target_temp_c;
-    const rate = night
-      ? -0.075  // °C per 15-min step → ≈ −0.3 °C/hr drifting toward night_target
-      : temp < target
-        ? 0.2   // heating: +0.8 °C/hr
-        : -0.05; // comfortable, slight natural cool
+    const target = night ? cfg.target_temp_c : cfg.day_target_temp_c;
+    const rate = night ? -0.075 : temp < target ? 0.2 : -0.05;
 
     temp = Math.max(
-      room.night_target_temp_c - 1,
-      Math.min(room.max_temp_c, temp + (temp < target ? Math.abs(rate) : rate))
+      cfg.target_temp_c - 1,
+      Math.min(cfg.max_temp_c, temp + (temp < target ? Math.abs(rate) : rate))
     );
 
     const predictedValve = night
-      ? room.night_pos_pct
+      ? cfg.night_pos_pct
       : temp < target
-        ? Math.round(Math.min(100, 20 + ((target - temp) / (target - room.night_target_temp_c)) * 80))
-        : room.min_pos_pct;
+        ? Math.round(Math.min(100, 20 + ((target - temp) / Math.max(1, target - cfg.target_temp_c)) * 80))
+        : cfg.min_pos_pct;
 
     points.push({ timeMs: ms, predictedTemp: parseFloat(temp.toFixed(2)), predictedValve, isNight: night });
   }
@@ -115,20 +126,11 @@ function buildPrediction(room: Room, startTemp: number, nowMs: number): PredPoin
 
 // ── Chart data builder ────────────────────────────────────────────────────────
 interface ChartPoint {
-  timeMs: number;
-  label: string;
-  histTemp?: number;
-  predTemp?: number;
-  predValve?: number;
-  nightBand?: number; // constant used for area fill
+  timeMs: number; label: string;
+  histTemp?: number; predTemp?: number; predValve?: number; nightBand?: number;
 }
 
-function buildChartData(
-  room: Room,
-  history: HistoryRow[],
-  nowMs: number,
-): ChartPoint[] {
-  // Bucket history rows for this room's TRVs into 15-min averages
+function buildChartData(room: Room, cfg: RoomCfg, history: HistoryRow[], nowMs: number): ChartPoint[] {
   const trvNames = new Set(room.shelly_zones.map(z => z.toLowerCase()));
   const relevant = history.filter(r => trvNames.has(r.zone_name.toLowerCase()) && r.current_temp_c != null);
 
@@ -140,35 +142,30 @@ function buildChartData(
     (buckets[key] ??= []).push(row.current_temp_c!);
   }
 
-  // Build timeline: 12h history + 12h prediction, every 15 min
   const startMs = nowMs - 12 * 60 * 60_000;
   const endMs   = nowMs + 12 * 60 * 60_000;
-  const STEP    = BUCKET;
-
-  const prediction = buildPrediction(room, room.current_temp ?? room.day_target_temp_c, nowMs);
-  const predMap = new Map(prediction.map(p => [Math.floor(p.timeMs / STEP) * STEP, p]));
+  const prediction = buildPrediction(room, cfg, room.current_temp ?? cfg.day_target_temp_c, nowMs);
+  const predMap = new Map(prediction.map(p => [Math.floor(p.timeMs / BUCKET) * BUCKET, p]));
 
   const points: ChartPoint[] = [];
-  for (let t = startMs; t <= endMs; t += STEP) {
-    const bucket = Math.floor(t / STEP) * STEP;
+  for (let t = startMs; t <= endMs; t += BUCKET) {
+    const bucket = Math.floor(t / BUCKET) * BUCKET;
     const d = new Date(t);
     const label = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
     const minuteOfDay = d.getHours() * 60 + d.getMinutes();
-    const night = room.park_at_night && isInNightWindow(minuteOfDay, room.park_time, room.night_end);
+    const night = room.park_at_night && isInNightWindow(minuteOfDay, cfg.park_time, cfg.night_end);
 
     const avgHist = buckets[bucket]?.length
       ? buckets[bucket].reduce((a, b) => a + b, 0) / buckets[bucket].length
       : undefined;
-
     const pred = predMap.get(bucket);
 
     points.push({
-      timeMs: t,
-      label,
+      timeMs: t, label,
       histTemp:  t <= nowMs && avgHist != null ? parseFloat(avgHist.toFixed(2)) : undefined,
       predTemp:  t >= nowMs ? pred?.predictedTemp : undefined,
       predValve: t >= nowMs ? pred?.predictedValve : undefined,
-      nightBand: night ? room.max_temp_c : undefined,
+      nightBand: night ? cfg.max_temp_c : undefined,
     });
   }
   return points;
@@ -183,51 +180,34 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
       {payload.map(p => (
         <p key={p.name} style={{ color: p.color }}>
           {p.name}: {typeof p.value === "number" ? p.value.toFixed(1) : p.value}
-          {p.name.includes("alve") ? "%" : "°C"}
+          {p.name.toLowerCase().includes("valve") ? "%" : "°C"}
         </p>
       ))}
     </div>
   );
 }
 
-// ── Schedule pills ────────────────────────────────────────────────────────────
-function SchedulePills({ room }: { room: Room }) {
-  const now = new Date();
-  const nowMin = now.getHours() * 60 + now.getMinutes();
-
-  function nextOccurrence(hhmm: string): string {
-    const target = parseHHMM(hhmm);
-    const diffMin = target >= nowMin ? target - nowMin : 1440 - nowMin + target;
-    if (diffMin < 60) return `in ${diffMin}min`;
-    if (diffMin < 120) return `in ${Math.round(diffMin / 60)}h ${diffMin % 60}min`;
-    return `at ${hhmm}`;
-  }
-
-  const events = room.park_at_night
-    ? [
-        { label: `Park ${room.park_time}`, sub: `→ ${room.night_pos_pct}%`, when: nextOccurrence(room.park_time), color: "bg-yellow-500/15 text-yellow-300 border-yellow-500/30" },
-        { label: `AI control ${room.night_end}`, sub: `target ${room.day_target_temp_c}°C`, when: nextOccurrence(room.night_end), color: "bg-blue-500/15 text-blue-300 border-blue-500/30" },
-      ]
-    : [
-        { label: "24h AI control", sub: `target ${room.day_target_temp_c}°C`, when: "", color: "bg-green-500/15 text-green-300 border-green-500/30" },
-      ];
-
+// ── Form helpers ──────────────────────────────────────────────────────────────
+function NI({ label, value, onChange, step = 0.5, min, max }: {
+  label: string; value: number; onChange: (v: number) => void; step?: number; min?: number; max?: number;
+}) {
   return (
-    <div className="flex flex-wrap gap-2">
-      {events.map(e => (
-        <span key={e.label} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${e.color}`}>
-          {e.label}
-          <span className="opacity-70">{e.sub}</span>
-          {e.when && <span className="opacity-50">· {e.when}</span>}
-        </span>
-      ))}
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-border/40 bg-muted/20 px-2.5 py-1 text-xs text-muted-foreground">
-        Ceiling {room.max_temp_c}°C
-      </span>
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-border/40 bg-muted/20 px-2.5 py-1 text-xs text-muted-foreground">
-        Night target {room.night_target_temp_c}°C
-      </span>
-    </div>
+    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+      {label}
+      <input type="number" value={value} step={step} min={min} max={max}
+        onChange={e => onChange(Number(e.target.value))}
+        className="rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
+    </label>
+  );
+}
+
+function TI({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+      {label}
+      <input type="text" value={value} onChange={e => onChange(e.target.value)} placeholder="HH:MM"
+        className="rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
+    </label>
   );
 }
 
@@ -251,39 +231,104 @@ function TrvStrip({ trvs }: { trvs: TrvDetail[] }) {
               <BatteryLow className="h-3 w-3" />{trv.battery}%
             </span>
           )}
-          {trv.connected
-            ? <Wifi className="h-3 w-3 text-green-400/60" />
-            : <WifiOff className="h-3 w-3 text-muted-foreground" />}
+          {trv.connected ? <Wifi className="h-3 w-3 text-green-400/60" /> : <WifiOff className="h-3 w-3 text-muted-foreground" />}
         </div>
       ))}
     </div>
   );
 }
 
+// ── Inline settings panel ─────────────────────────────────────────────────────
+function SettingsPanel({
+  cfg, onChange, onSave, saving, saved,
+}: {
+  cfg: RoomCfg;
+  onChange: (patch: Partial<RoomCfg>) => void;
+  onSave: () => void;
+  saving: boolean;
+  saved: boolean;
+}) {
+  return (
+    <div className="border-t border-border/40 px-4 py-4 bg-muted/5 space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Room Settings</p>
+        <Button size="sm" onClick={onSave} disabled={saving} className="h-7 text-xs gap-1.5">
+          <Save className="h-3 w-3" />
+          {saving ? "Saving…" : saved ? "Saved!" : "Save & Apply"}
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <NI label="Day target (°C)" value={cfg.day_target_temp_c} min={16} max={25}
+          onChange={v => onChange({ day_target_temp_c: v })} />
+        <NI label="Night target (°C)" value={cfg.target_temp_c} min={14} max={22}
+          onChange={v => onChange({ target_temp_c: v })} />
+        <NI label="Ceiling (°C)" value={cfg.max_temp_c} min={15} max={28}
+          onChange={v => onChange({ max_temp_c: v })} />
+        {cfg.nest_idle_temp_c != null && (
+          <NI label="Zone idle floor (°C)" value={cfg.nest_idle_temp_c} min={14} max={24}
+            onChange={v => onChange({ nest_idle_temp_c: v })} />
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <TI label="Park time (HH:MM)" value={cfg.park_time} onChange={v => onChange({ park_time: v })} />
+        <TI label="Night end (HH:MM)" value={cfg.night_end} onChange={v => onChange({ night_end: v })} />
+        <NI label="Night valve (%)" value={cfg.night_pos_pct} step={5} min={0} max={100}
+          onChange={v => onChange({ night_pos_pct: v })} />
+        <NI label="Min valve (%)" value={cfg.min_pos_pct} step={5} min={0} max={100}
+          onChange={v => onChange({ min_pos_pct: v })} />
+      </div>
+
+      <p className="text-xs text-muted-foreground/60">
+        Changes preview instantly in the chart above. Click Save & Apply to write to the engine.
+      </p>
+    </div>
+  );
+}
+
 // ── Room card ─────────────────────────────────────────────────────────────────
-function RoomCard({ room, history, isNight }: { room: Room; history: HistoryRow[]; isNight: boolean }) {
+function RoomCard({
+  room, cfg, history, isNight, onCfgChange, onSave, saving, saved,
+}: {
+  room: Room;
+  cfg: RoomCfg;
+  history: HistoryRow[];
+  isNight: boolean;
+  onCfgChange: (patch: Partial<RoomCfg>) => void;
+  onSave: () => void;
+  saving: boolean;
+  saved: boolean;
+}) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const phase = PHASE[room.phase] ?? PHASE.IDLE;
-  const activeTarget = isNight ? room.night_target_temp_c : room.day_target_temp_c;
+  const activeTarget = isNight ? cfg.target_temp_c : cfg.day_target_temp_c;
   const tempDelta = room.current_temp != null ? room.current_temp - activeTarget : null;
   const tempColor =
     room.current_temp == null ? "text-muted-foreground"
-    : room.current_temp >= room.max_temp_c ? "text-red-400"
+    : room.current_temp >= cfg.max_temp_c ? "text-red-400"
     : room.current_temp >= activeTarget ? "text-green-400"
     : "text-blue-400";
 
   const nowMs = Date.now();
-  const chartData = buildChartData(room, history, nowMs);
+  const chartData = buildChartData(room, cfg, history, nowMs);
 
-  // X-axis: show label every 2h (every 8 steps of 15min)
-  const xTicks = chartData
-    .filter((_, i) => i % 8 === 0)
-    .map(p => p.timeMs);
-
-  const yMin = Math.floor(Math.min(room.night_target_temp_c - 1, ...chartData.filter(p => p.histTemp).map(p => p.histTemp!)) - 0.5);
-  const yMax = Math.ceil(room.max_temp_c + 0.5);
-
-  // Reference line at "now"
+  const xTicks = chartData.filter((_, i) => i % 8 === 0).map(p => p.timeMs);
+  const histTemps = chartData.filter(p => p.histTemp != null).map(p => p.histTemp!);
+  const yMin = Math.floor(Math.min(cfg.target_temp_c - 1, ...(histTemps.length ? histTemps : [cfg.target_temp_c])) - 0.5);
+  const yMax = Math.ceil(cfg.max_temp_c + 0.5);
   const nowBucket = Math.floor(nowMs / (15 * 60_000)) * (15 * 60_000);
+
+  // Schedule pills
+  function nextOccurrence(hhmm: string): string {
+    const d = new Date();
+    const nowMin = d.getHours() * 60 + d.getMinutes();
+    const target = parseHHMM(hhmm);
+    const diff = target >= nowMin ? target - nowMin : 1440 - nowMin + target;
+    if (diff < 60) return `in ${diff}min`;
+    const h = Math.floor(diff / 60), m = diff % 60;
+    return m > 0 ? `in ${h}h ${m}min` : `in ${h}h`;
+  }
 
   return (
     <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
@@ -323,114 +368,100 @@ function RoomCard({ room, history, isNight }: { room: Room; history: HistoryRow[
 
       {/* TRV strip */}
       {room.trvs.length > 0 && (
-        <div className="px-4 pb-3">
-          <TrvStrip trvs={room.trvs} />
-        </div>
+        <div className="px-4 pb-3"><TrvStrip trvs={room.trvs} /></div>
       )}
 
       {/* Chart */}
       <div className="px-4 pb-2">
-        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">24h Temperature · History + Prediction</p>
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+          24h Temperature · History + Prediction
+        </p>
         <ResponsiveContainer width="100%" height={200}>
-          <ComposedChart data={chartData} margin={{ top: 4, right: 10, bottom: 0, left: -10 }}>
+          <ComposedChart data={chartData} margin={{ top: 4, right: 32, bottom: 0, left: -10 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
             <XAxis
-              dataKey="timeMs"
-              type="number"
-              domain={["dataMin", "dataMax"]}
-              ticks={xTicks}
+              dataKey="timeMs" type="number" domain={["dataMin", "dataMax"]} ticks={xTicks}
               tickFormatter={ms => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
               tick={{ fontSize: 9, fill: "rgba(255,255,255,0.35)" }}
             />
-            <YAxis
-              domain={[yMin, yMax]}
-              tick={{ fontSize: 9, fill: "rgba(255,255,255,0.35)" }}
-              tickFormatter={v => `${v}°`}
-            />
+            <YAxis domain={[yMin, yMax]} tick={{ fontSize: 9, fill: "rgba(255,255,255,0.35)" }} tickFormatter={v => `${v}°`} />
+            <YAxis yAxisId="right" orientation="right" domain={[0, 100]}
+              tick={{ fontSize: 9, fill: "rgba(52,211,153,0.4)" }} tickFormatter={v => `${v}%`} width={28} />
             <Tooltip content={<ChartTooltip />} />
 
-            {/* Night shading band */}
-            <Area
-              dataKey="nightBand"
-              fill="rgba(99,179,237,0.08)"
-              stroke="none"
-              legendType="none"
-              isAnimationActive={false}
-              dot={false}
-              activeDot={false}
-            />
+            <Area dataKey="nightBand" fill="rgba(99,179,237,0.08)" stroke="none"
+              legendType="none" isAnimationActive={false} dot={false} activeDot={false} />
 
-            {/* Reference lines */}
-            <ReferenceLine y={room.day_target_temp_c} stroke="rgba(251,146,60,0.5)" strokeDasharray="4 3"
-              label={{ value: `Day ${room.day_target_temp_c}°`, position: "insideTopRight", fontSize: 9, fill: "rgba(251,146,60,0.7)" }} />
-            <ReferenceLine y={room.night_target_temp_c} stroke="rgba(96,165,250,0.5)" strokeDasharray="4 3"
-              label={{ value: `Night ${room.night_target_temp_c}°`, position: "insideBottomRight", fontSize: 9, fill: "rgba(96,165,250,0.7)" }} />
-            <ReferenceLine y={room.max_temp_c} stroke="rgba(248,113,113,0.4)" strokeDasharray="2 4"
-              label={{ value: `Max ${room.max_temp_c}°`, position: "insideTopRight", fontSize: 9, fill: "rgba(248,113,113,0.6)" }} />
-
-            {/* Now line */}
+            <ReferenceLine y={cfg.day_target_temp_c} stroke="rgba(251,146,60,0.5)" strokeDasharray="4 3"
+              label={{ value: `Day ${cfg.day_target_temp_c}°`, position: "insideTopRight", fontSize: 9, fill: "rgba(251,146,60,0.7)" }} />
+            <ReferenceLine y={cfg.target_temp_c} stroke="rgba(96,165,250,0.5)" strokeDasharray="4 3"
+              label={{ value: `Night ${cfg.target_temp_c}°`, position: "insideBottomRight", fontSize: 9, fill: "rgba(96,165,250,0.7)" }} />
+            <ReferenceLine y={cfg.max_temp_c} stroke="rgba(248,113,113,0.4)" strokeDasharray="2 4"
+              label={{ value: `Max ${cfg.max_temp_c}°`, position: "insideTopRight", fontSize: 9, fill: "rgba(248,113,113,0.6)" }} />
             <ReferenceLine x={nowBucket} stroke="rgba(255,255,255,0.25)" strokeDasharray="3 3"
               label={{ value: "Now", position: "insideTopLeft", fontSize: 9, fill: "rgba(255,255,255,0.4)" }} />
 
-            {/* History */}
-            <Line
-              dataKey="histTemp"
-              name="Actual temp"
-              stroke="#f97316"
-              strokeWidth={2}
-              dot={false}
-              connectNulls
-              isAnimationActive={false}
-            />
-
-            {/* Prediction */}
-            <Line
-              dataKey="predTemp"
-              name="Predicted temp"
-              stroke="#f97316"
-              strokeWidth={1.5}
-              strokeDasharray="5 4"
-              dot={false}
-              connectNulls
-              isAnimationActive={false}
-              opacity={0.6}
-            />
-
-            {/* Predicted valve % — right Y axis would need extra YAxis; show as thin line */}
-            <Line
-              dataKey="predValve"
-              name="Pred valve"
-              stroke="rgba(52,211,153,0.5)"
-              strokeWidth={1}
-              strokeDasharray="3 3"
-              dot={false}
-              connectNulls
-              isAnimationActive={false}
-              yAxisId="right"
-            />
-            <YAxis
-              yAxisId="right"
-              orientation="right"
-              domain={[0, 100]}
-              tick={{ fontSize: 9, fill: "rgba(52,211,153,0.4)" }}
-              tickFormatter={v => `${v}%`}
-              width={28}
-            />
+            <Line dataKey="histTemp" name="Actual" stroke="#f97316" strokeWidth={2}
+              dot={false} connectNulls isAnimationActive={false} />
+            <Line dataKey="predTemp" name="Predicted" stroke="#f97316" strokeWidth={1.5}
+              strokeDasharray="5 4" dot={false} connectNulls isAnimationActive={false} opacity={0.6} />
+            <Line dataKey="predValve" name="Pred valve" stroke="rgba(52,211,153,0.5)"
+              strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls isAnimationActive={false} yAxisId="right" />
           </ComposedChart>
         </ResponsiveContainer>
+
         <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
           <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-orange-400 rounded" />Actual</span>
-          <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-orange-400/50 rounded border-t border-dashed border-orange-400/50" />Predicted</span>
+          <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-orange-400/50 rounded" />Predicted</span>
           <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-teal-400/50 rounded" />Valve %</span>
           <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 bg-blue-400/10 rounded-sm border border-blue-400/20" />Night</span>
         </div>
       </div>
 
       {/* Schedule pills */}
-      <div className="px-4 pb-4 pt-1">
-        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Schedule</p>
-        <SchedulePills room={room} />
+      <div className="px-4 pb-3 pt-1 flex flex-wrap gap-2">
+        {room.park_at_night && (
+          <>
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-yellow-500/30 bg-yellow-500/15 px-2.5 py-1 text-xs font-medium text-yellow-300">
+              Park {cfg.park_time} → {cfg.night_pos_pct}%
+              <span className="opacity-50">· {nextOccurrence(cfg.park_time)}</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-500/30 bg-blue-500/15 px-2.5 py-1 text-xs font-medium text-blue-300">
+              AI control {cfg.night_end}
+              <span className="opacity-50">· {nextOccurrence(cfg.night_end)}</span>
+            </span>
+          </>
+        )}
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-border/40 bg-muted/20 px-2.5 py-1 text-xs text-muted-foreground">
+          Night target {cfg.target_temp_c}°C
+        </span>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-border/40 bg-muted/20 px-2.5 py-1 text-xs text-muted-foreground">
+          Day target {cfg.day_target_temp_c}°C
+        </span>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-border/40 bg-muted/20 px-2.5 py-1 text-xs text-muted-foreground">
+          Ceiling {cfg.max_temp_c}°C
+        </span>
       </div>
+
+      {/* Settings toggle */}
+      <button
+        onClick={() => setSettingsOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-4 py-2.5 border-t border-border/30 text-xs text-muted-foreground hover:text-foreground hover:bg-accent/10 transition-colors"
+      >
+        <Settings2 className="h-3.5 w-3.5" />
+        <span>Settings</span>
+        {settingsOpen ? <ChevronDown className="h-3.5 w-3.5 ml-auto" /> : <ChevronRight className="h-3.5 w-3.5 ml-auto" />}
+      </button>
+
+      {settingsOpen && (
+        <SettingsPanel
+          cfg={cfg}
+          onChange={onCfgChange}
+          onSave={onSave}
+          saving={saving}
+          saved={saved}
+        />
+      )}
     </div>
   );
 }
@@ -438,24 +469,37 @@ function RoomCard({ room, history, isNight }: { room: Room; history: HistoryRow[
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function RoomsPage() {
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [fullConfig, setFullConfig] = useState<FullConfig | null>(null);
+  const [localCfgs, setLocalCfgs] = useState<Record<string, RoomCfg>>({});
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [isNight, setIsNight] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [savingRoom, setSavingRoom] = useState<string | null>(null);
+  const [savedRoom, setSavedRoom] = useState<string | null>(null);
 
   const fetchAll = useCallback(async () => {
     try {
-      const [roomsData, histData] = await Promise.allSettled([
-        api.rooms(),
-        api.history(12),
+      const [roomsData, histData, cfgData] = await Promise.allSettled([
+        api.rooms(), api.history(12), api.config(),
       ]);
       if (roomsData.status === "fulfilled") {
         setRooms((roomsData.value.rooms ?? []).filter((r: Room) => r.enabled));
         setIsNight(roomsData.value.is_night ?? false);
       }
-      if (histData.status === "fulfilled") {
-        setHistory(histData.value.rows ?? []);
+      if (histData.status === "fulfilled") setHistory(histData.value.rows ?? []);
+      if (cfgData.status === "fulfilled") {
+        const cfg: FullConfig = cfgData.value.config ?? cfgData.value;
+        setFullConfig(cfg);
+        // Build per-room config map — only initialise if not already edited
+        setLocalCfgs(prev => {
+          const next: Record<string, RoomCfg> = { ...prev };
+          for (const rc of (cfg.rooms ?? []) as RoomCfg[]) {
+            if (!next[rc.name]) next[rc.name] = { ...rc };
+          }
+          return next;
+        });
       }
       setLastUpdate(new Date());
     } finally {
@@ -469,6 +513,32 @@ export default function RoomsPage() {
     const t = setInterval(fetchAll, 5 * 60_000);
     return () => clearInterval(t);
   }, [fetchAll]);
+
+  function updateRoomCfg(roomName: string, patch: Partial<RoomCfg>) {
+    setLocalCfgs(prev => ({
+      ...prev,
+      [roomName]: { ...prev[roomName], ...patch },
+    }));
+  }
+
+  async function saveRoom(roomName: string) {
+    if (!fullConfig) return;
+    setSavingRoom(roomName);
+    try {
+      const updatedConfig: FullConfig = {
+        ...fullConfig,
+        rooms: fullConfig.rooms.map(r =>
+          r.name === roomName ? { ...r, ...localCfgs[roomName] } : r
+        ),
+      };
+      await api.saveConfig(updatedConfig);
+      setFullConfig(updatedConfig);
+      setSavedRoom(roomName);
+      setTimeout(() => setSavedRoom(null), 2500);
+    } finally {
+      setSavingRoom(null);
+    }
+  }
 
   return (
     <div>
@@ -495,17 +565,37 @@ export default function RoomsPage() {
 
       {loading ? (
         <div className="space-y-4">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="h-64 rounded-xl bg-muted/30 animate-pulse" />
-          ))}
+          {[...Array(3)].map((_, i) => <div key={i} className="h-64 rounded-xl bg-muted/30 animate-pulse" />)}
         </div>
       ) : rooms.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground text-sm">No rooms configured.</div>
       ) : (
         <div className="space-y-5">
-          {rooms.map(room => (
-            <RoomCard key={room.name} room={room} history={history} isNight={isNight} />
-          ))}
+          {rooms.map(room => {
+            const cfg = localCfgs[room.name] ?? {
+              name: room.name,
+              day_target_temp_c: room.day_target_temp_c,
+              target_temp_c: room.night_target_temp_c,
+              max_temp_c: room.max_temp_c,
+              min_pos_pct: room.min_pos_pct,
+              night_pos_pct: room.night_pos_pct,
+              park_time: room.park_time,
+              night_end: room.night_end,
+            };
+            return (
+              <RoomCard
+                key={room.name}
+                room={room}
+                cfg={cfg}
+                history={history}
+                isNight={isNight}
+                onCfgChange={patch => updateRoomCfg(room.name, patch)}
+                onSave={() => saveRoom(room.name)}
+                saving={savingRoom === room.name}
+                saved={savedRoom === room.name}
+              />
+            );
+          })}
         </div>
       )}
     </div>
