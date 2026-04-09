@@ -70,6 +70,9 @@ interface RoomCfg {
 
 interface FullConfig {
   rooms: RoomCfg[];
+  morning_boost_time?: string;
+  morning_boost_temp_c?: number;
+  morning_boost_duration_min?: number;
   [key: string]: unknown;
 }
 
@@ -216,6 +219,18 @@ function TI({ label, value, onChange }: { label: string; value: string; onChange
     <label className="flex flex-col gap-1 text-xs text-muted-foreground">
       {label}
       <input type="text" value={value} onChange={e => onChange(e.target.value)} placeholder="HH:MM"
+        className="rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring font-mono" />
+    </label>
+  );
+}
+
+function SI({ label, value, onChange, placeholder = "" }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string;
+}) {
+  return (
+    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+      {label}
+      <input type="text" value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
         className="rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
     </label>
   );
@@ -286,21 +301,22 @@ function SettingsPanel({
         </Button>
       </div>
 
-      {/* Identity */}
+      {/* 1 · Identity */}
       <div className="space-y-2">
         <p className="text-xs text-muted-foreground font-medium">Identity</p>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Toggle label="Room enabled" value={cfg.enabled ?? true} onChange={v => onChange({ enabled: v })} />
           <label className="flex flex-col gap-1 text-xs text-muted-foreground col-span-1">
             Room type
-            <select value={cfg.room_type} onChange={e => onChange({ room_type: e.target.value as RoomCfg["room_type"] })}
+            <select value={cfg.room_type ?? "bedroom"} onChange={e => onChange({ room_type: e.target.value as RoomCfg["room_type"] })}
               className="rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring">
-              <option value="bedroom">bedroom</option>
-              <option value="living">living</option>
-              <option value="zone_only">zone_only</option>
+              <option value="bedroom">Bedroom</option>
+              <option value="living">Living / Daytime</option>
+              <option value="zone_only">Zone only (no TRVs)</option>
             </select>
           </label>
-          <TI label="Nest zone" value={cfg.nest_zone_name ?? ""} onChange={v => onChange({ nest_zone_name: v })} />
+          <SI label="Nest zone name" value={cfg.nest_zone_name ?? ""} placeholder="e.g. Hallway"
+            onChange={v => onChange({ nest_zone_name: v })} />
           <label className="flex flex-col gap-1 text-xs text-muted-foreground col-span-1 sm:col-span-2">
             Shelly TRVs (comma-separated)
             <input type="text" value={shellyStr}
@@ -311,55 +327,63 @@ function SettingsPanel({
         </div>
       </div>
 
-      {/* Temperatures */}
+      {/* 2 · Morning — first events after night ends */}
       <div className="space-y-2">
-        <p className="text-xs text-muted-foreground font-medium">Temperatures</p>
+        <p className="text-xs text-muted-foreground font-medium">
+          Morning
+          <span className="ml-1.5 text-muted-foreground/40 font-normal text-xs">AI resumes at Night end · Boost fires immediately after</span>
+        </p>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <NI label="Day target (°C)" value={cfg.day_target_temp_c} min={16} max={25}
-            onChange={v => onChange({ day_target_temp_c: v })} />
-          <NI label="Night target (°C)" value={cfg.target_temp_c} min={14} max={22}
-            onChange={v => onChange({ target_temp_c: v })} />
-          <NI label="Ceiling (°C)" value={cfg.max_temp_c} min={15} max={28}
-            onChange={v => onChange({ max_temp_c: v })} />
-          <NI label="Zone idle floor (°C)" value={cfg.nest_idle_temp_c ?? 15} min={14} max={24}
-            onChange={v => onChange({ nest_idle_temp_c: v })} />
+          <TI label="Night end — AI resumes (HH:MM)" value={cfg.night_end ?? "06:00"}
+            onChange={v => onChange({ night_end: v })} />
+          <TI label="Boost time (blank = global default)" value={cfg.morning_boost_time ?? ""}
+            onChange={v => onChange({ morning_boost_time: v || undefined })} />
+          <NI label={`Boost target °C (0 = global ${globalBoostTemp}°C)`}
+            value={cfg.morning_boost_temp_c ?? 0} step={0.5} min={0} max={25}
+            onChange={v => onChange({ morning_boost_temp_c: v || null })} />
+          <NI label={`Boost duration min (0 = global ${globalBoostDur}min)`}
+            value={cfg.morning_boost_duration_min ?? 0} step={5} min={0} max={240}
+            onChange={v => onChange({ morning_boost_duration_min: v || null })} />
         </div>
       </div>
 
-      {/* Schedule & valves */}
+      {/* 3 · Day operation */}
       <div className="space-y-2">
-        <p className="text-xs text-muted-foreground font-medium">Schedule & Valves</p>
+        <p className="text-xs text-muted-foreground font-medium">
+          Day
+          <span className="ml-1.5 text-muted-foreground/40 font-normal text-xs">Targets and valve limits during active hours</span>
+        </p>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <TI label="Park time (HH:MM)" value={cfg.park_time} onChange={v => onChange({ park_time: v })} />
-          <TI label="Night end (HH:MM)" value={cfg.night_end} onChange={v => onChange({ night_end: v })} />
-          <NI label="Night valve (%)" value={cfg.night_pos_pct} step={5} min={0} max={100}
-            onChange={v => onChange({ night_pos_pct: v })} />
-          <NI label="Min valve (%)" value={cfg.min_pos_pct} step={5} min={0} max={100}
+          <NI label="Day target (°C)" value={cfg.day_target_temp_c ?? 21} min={16} max={25}
+            onChange={v => onChange({ day_target_temp_c: v })} />
+          <NI label="Ceiling — max allowed (°C)" value={cfg.max_temp_c ?? 22} min={15} max={28}
+            onChange={v => onChange({ max_temp_c: v })} />
+          <NI label="Zone idle floor (°C)" value={cfg.nest_idle_temp_c ?? 15} min={14} max={24}
+            onChange={v => onChange({ nest_idle_temp_c: v })} />
+          <NI label="Min valve open (%)" value={cfg.min_pos_pct ?? 5} step={5} min={0} max={100}
             onChange={v => onChange({ min_pos_pct: v })} />
         </div>
       </div>
 
-      {/* Morning boost */}
+      {/* 4 · Night — park and overnight */}
       <div className="space-y-2">
         <p className="text-xs text-muted-foreground font-medium">
-          Morning Boost
-          <span className="ml-1.5 text-muted-foreground/50 font-normal">
-            (defaults: {globalBoostTime}, {globalBoostTemp}°C, {globalBoostDur}min)
-          </span>
+          Night
+          <span className="ml-1.5 text-muted-foreground/40 font-normal text-xs">Valves park at Park time · stay parked until Night end</span>
         </p>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          <TI label="Boost time (HH:MM — blank = global)" value={cfg.morning_boost_time ?? ""}
-            onChange={v => onChange({ morning_boost_time: v || undefined })} />
-          <NI label="Boost target (°C — 0 = global)" value={cfg.morning_boost_temp_c ?? 0} step={0.5} min={0} max={25}
-            onChange={v => onChange({ morning_boost_temp_c: v || null })} />
-          <NI label="Duration (min — 0 = global)" value={cfg.morning_boost_duration_min ?? 0} step={5} min={0} max={240}
-            onChange={v => onChange({ morning_boost_duration_min: v || null })} />
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <TI label="Park time — valves park (HH:MM)" value={cfg.park_time ?? "18:55"}
+            onChange={v => onChange({ park_time: v })} />
+          <NI label="Parked valve position (%)" value={cfg.night_pos_pct ?? 5} step={5} min={0} max={100}
+            onChange={v => onChange({ night_pos_pct: v })} />
+          <NI label="Night target (°C)" value={cfg.target_temp_c ?? 18} min={14} max={22}
+            onChange={v => onChange({ target_temp_c: v })} />
         </div>
-        <p className="text-xs text-muted-foreground/50">
-          Leave blank / 0 to inherit global defaults from Settings. Set per-room values to override.
-          The chart night band shifts as you change Park time and Night end.
-        </p>
       </div>
+
+      <p className="text-xs text-muted-foreground/50">
+        Changes preview instantly in the chart above. Click Save &amp; Apply to write to the engine.
+      </p>
     </div>
   );
 }
@@ -586,7 +610,19 @@ export default function RoomsPage() {
         setLocalCfgs(prev => {
           const next: Record<string, RoomCfg> = { ...prev };
           for (const rc of (cfg.rooms ?? []) as RoomCfg[]) {
-            if (!next[rc.name]) next[rc.name] = { ...rc };
+            if (!next[rc.name]) next[rc.name] = {
+              ...rc,
+              // Ensure day target never falls back to undefined/NaN
+              day_target_temp_c: rc.day_target_temp_c ?? rc.target_temp_c ?? 21,
+              target_temp_c: rc.target_temp_c ?? 18,
+              max_temp_c: rc.max_temp_c ?? 22,
+              min_pos_pct: rc.min_pos_pct ?? 5,
+              night_pos_pct: rc.night_pos_pct ?? 5,
+              nest_idle_temp_c: rc.nest_idle_temp_c ?? 15,
+              park_time: rc.park_time ?? "18:55",
+              night_end: rc.night_end ?? "06:00",
+              shelly_zones: rc.shelly_zones ?? [],
+            };
           }
           return next;
         });
