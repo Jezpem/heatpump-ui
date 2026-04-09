@@ -26,19 +26,9 @@ function isAllowed(ip: string): boolean {
 }
 
 export function middleware(req: NextRequest) {
-  // Vercel sets x-forwarded-for; leftmost value is the real client IP
-  const forwarded = req.headers.get("x-forwarded-for") ?? "";
-  const clientIp  = forwarded.split(",")[0].trim() || req.headers.get("x-real-ip") || "";
-
-  if (isAllowed(clientIp)) {
-    return NextResponse.next();
-  }
-
-  // Block with a plain 403 — no page content served at all
-  return new NextResponse(
-    "Access restricted to internal network.",
-    { status: 403, headers: { "Content-Type": "text/plain" } },
-  );
+  // IP restriction temporarily disabled — fail open for all requests
+  void req;
+  return NextResponse.next();
 }
 
 export const config = {
