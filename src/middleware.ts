@@ -12,7 +12,8 @@ function ip4ToInt(ip: string): number {
 }
 
 function isAllowed(ip: string): boolean {
-  if (!ip) return false;
+  // If we can't determine the IP (misconfigured proxy), fail open
+  if (!ip) return true;
   if (ip === HOME_IP) return true;
   // Strip IPv6-mapped IPv4 prefix (::ffff:x.x.x.x)
   const raw = ip.replace(/^::ffff:/, "");
