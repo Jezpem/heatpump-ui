@@ -253,9 +253,10 @@ function Toggle({ label, value, onChange }: { label: string; value: boolean; onC
 
 // ── Inline settings panel ─────────────────────────────────────────────────────
 function SettingsPanel({
-  cfg, globalBoostTime, globalBoostTemp, globalBoostDur, onChange, onSave, saving, saved,
+  cfg, nestZones, globalBoostTime, globalBoostTemp, globalBoostDur, onChange, onSave, saving, saved,
 }: {
   cfg: RoomCfg;
+  nestZones: string[];
   globalBoostTime: string;
   globalBoostTemp: number;
   globalBoostDur: number;
@@ -290,8 +291,20 @@ function SettingsPanel({
               <option value="zone_only">Zone only (no TRVs)</option>
             </select>
           </label>
-          <SI label="Nest zone name" value={cfg.nest_zone_name ?? ""} placeholder="e.g. Hallway"
-            onChange={v => onChange({ nest_zone_name: v })} />
+          {nestZones.length > 0 ? (
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground col-span-1">
+              Nest zone
+              <select value={cfg.nest_zone_name ?? ""}
+                onChange={e => onChange({ nest_zone_name: e.target.value })}
+                className="rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring">
+                <option value="">— none —</option>
+                {nestZones.map(z => <option key={z} value={z}>{z}</option>)}
+              </select>
+            </label>
+          ) : (
+            <SI label="Nest zone name" value={cfg.nest_zone_name ?? ""} placeholder="e.g. Hallway"
+              onChange={v => onChange({ nest_zone_name: v })} />
+          )}
           <label className="flex flex-col gap-1 text-xs text-muted-foreground col-span-1 sm:col-span-2">
             Shelly TRVs (comma-separated)
             <input type="text" value={shellyStr}
@@ -365,12 +378,13 @@ function SettingsPanel({
 
 // ── Room card ─────────────────────────────────────────────────────────────────
 function RoomCard({
-  room, cfg, isNight, globalBoostTime, globalBoostTemp, globalBoostDur,
+  room, cfg, isNight, nestZones, globalBoostTime, globalBoostTemp, globalBoostDur,
   onCfgChange, onSave, saving, saved,
 }: {
   room: Room;
   cfg: RoomCfg;
   isNight: boolean;
+  nestZones: string[];
   globalBoostTime: string;
   globalBoostTemp: number;
   globalBoostDur: number;
@@ -543,6 +557,7 @@ function RoomCard({
       {settingsOpen && (
         <SettingsPanel
           cfg={cfg}
+          nestZones={nestZones}
           globalBoostTime={globalBoostTime}
           globalBoostTemp={globalBoostTemp}
           globalBoostDur={globalBoostDur}
@@ -559,6 +574,7 @@ function RoomCard({
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function RoomsPage() {
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [nestZones, setNestZones] = useState<string[]>([]);
   const [fullConfig, setFullConfig] = useState<FullConfig | null>(null);
   const [localCfgs, setLocalCfgs] = useState<Record<string, RoomCfg>>({});
   const [globalBoost, setGlobalBoost] = useState({ time: "07:00", temp: 21, dur: 60 });
@@ -577,6 +593,7 @@ export default function RoomsPage() {
       if (roomsData.status === "fulfilled") {
         setRooms((roomsData.value.rooms ?? []).filter((r: Room) => r.enabled));
         setIsNight(roomsData.value.is_night ?? false);
+        setNestZones(roomsData.value.nest_zones ?? []);
       }
       if (cfgData.status === "fulfilled") {
         const cfg: FullConfig = cfgData.value.config ?? cfgData.value;
@@ -701,6 +718,7 @@ export default function RoomsPage() {
                 room={room}
                 cfg={cfg}
                 isNight={isNight}
+                nestZones={nestZones}
                 globalBoostTime={globalBoost.time}
                 globalBoostTemp={globalBoost.temp}
                 globalBoostDur={globalBoost.dur}
