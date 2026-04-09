@@ -37,6 +37,9 @@ interface Room {
   park_time: string;
   night_start: string;
   night_end: string;
+  morning_boost_time: string;
+  morning_boost_temp_c: number | null;
+  morning_boost_duration_min: number | null;
   enabled: boolean;
   reasoning: string;
   eta_min: number | null;
@@ -47,6 +50,10 @@ interface Room {
 /** Editable per-room config fields (mirrors backend RoomConfig) */
 interface RoomCfg {
   name: string;
+  enabled: boolean;
+  room_type: "bedroom" | "living" | "zone_only";
+  nest_zone_name: string;
+  shelly_zones: string[];
   day_target_temp_c: number;
   target_temp_c: number;       // night target
   max_temp_c: number;
@@ -55,6 +62,9 @@ interface RoomCfg {
   park_time: string;
   night_end: string;
   nest_idle_temp_c?: number;
+  morning_boost_time?: string;
+  morning_boost_temp_c?: number | null;
+  morning_boost_duration_min?: number | null;
   [key: string]: unknown;
 }
 
@@ -238,18 +248,36 @@ function TrvStrip({ trvs }: { trvs: TrvDetail[] }) {
   );
 }
 
+// ── Toggle ────────────────────────────────────────────────────────────────────
+function Toggle({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className="flex items-center justify-between col-span-2 sm:col-span-4">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <button onClick={() => onChange(!value)}
+        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${value ? "bg-primary" : "bg-muted"}`}>
+        <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${value ? "translate-x-4.5" : "translate-x-0.5"}`} />
+      </button>
+    </div>
+  );
+}
+
 // ── Inline settings panel ─────────────────────────────────────────────────────
 function SettingsPanel({
-  cfg, onChange, onSave, saving, saved,
+  cfg, globalBoostTime, globalBoostTemp, globalBoostDur, onChange, onSave, saving, saved,
 }: {
   cfg: RoomCfg;
+  globalBoostTime: string;
+  globalBoostTemp: number;
+  globalBoostDur: number;
   onChange: (patch: Partial<RoomCfg>) => void;
   onSave: () => void;
   saving: boolean;
   saved: boolean;
 }) {
+  const shellyStr = (cfg.shelly_zones ?? []).join(", ");
+
   return (
-    <div className="border-t border-border/40 px-4 py-4 bg-muted/5 space-y-4">
+    <div className="border-t border-border/40 px-4 py-4 bg-muted/5 space-y-5">
       <div className="flex items-center justify-between">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Room Settings</p>
         <Button size="sm" onClick={onSave} disabled={saving} className="h-7 text-xs gap-1.5">
@@ -258,43 +286,96 @@ function SettingsPanel({
         </Button>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <NI label="Day target (°C)" value={cfg.day_target_temp_c} min={16} max={25}
-          onChange={v => onChange({ day_target_temp_c: v })} />
-        <NI label="Night target (°C)" value={cfg.target_temp_c} min={14} max={22}
-          onChange={v => onChange({ target_temp_c: v })} />
-        <NI label="Ceiling (°C)" value={cfg.max_temp_c} min={15} max={28}
-          onChange={v => onChange({ max_temp_c: v })} />
-        {cfg.nest_idle_temp_c != null && (
-          <NI label="Zone idle floor (°C)" value={cfg.nest_idle_temp_c} min={14} max={24}
+      {/* Identity */}
+      <div className="space-y-2">
+        <p className="text-xs text-muted-foreground font-medium">Identity</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <Toggle label="Room enabled" value={cfg.enabled ?? true} onChange={v => onChange({ enabled: v })} />
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground col-span-1">
+            Room type
+            <select value={cfg.room_type} onChange={e => onChange({ room_type: e.target.value as RoomCfg["room_type"] })}
+              className="rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring">
+              <option value="bedroom">bedroom</option>
+              <option value="living">living</option>
+              <option value="zone_only">zone_only</option>
+            </select>
+          </label>
+          <TI label="Nest zone" value={cfg.nest_zone_name ?? ""} onChange={v => onChange({ nest_zone_name: v })} />
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground col-span-1 sm:col-span-2">
+            Shelly TRVs (comma-separated)
+            <input type="text" value={shellyStr}
+              onChange={e => onChange({ shelly_zones: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })}
+              placeholder="e.g. Master Bed 1, Master Bed 2"
+              className="rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
+          </label>
+        </div>
+      </div>
+
+      {/* Temperatures */}
+      <div className="space-y-2">
+        <p className="text-xs text-muted-foreground font-medium">Temperatures</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <NI label="Day target (°C)" value={cfg.day_target_temp_c} min={16} max={25}
+            onChange={v => onChange({ day_target_temp_c: v })} />
+          <NI label="Night target (°C)" value={cfg.target_temp_c} min={14} max={22}
+            onChange={v => onChange({ target_temp_c: v })} />
+          <NI label="Ceiling (°C)" value={cfg.max_temp_c} min={15} max={28}
+            onChange={v => onChange({ max_temp_c: v })} />
+          <NI label="Zone idle floor (°C)" value={cfg.nest_idle_temp_c ?? 15} min={14} max={24}
             onChange={v => onChange({ nest_idle_temp_c: v })} />
-        )}
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <TI label="Park time (HH:MM)" value={cfg.park_time} onChange={v => onChange({ park_time: v })} />
-        <TI label="Night end (HH:MM)" value={cfg.night_end} onChange={v => onChange({ night_end: v })} />
-        <NI label="Night valve (%)" value={cfg.night_pos_pct} step={5} min={0} max={100}
-          onChange={v => onChange({ night_pos_pct: v })} />
-        <NI label="Min valve (%)" value={cfg.min_pos_pct} step={5} min={0} max={100}
-          onChange={v => onChange({ min_pos_pct: v })} />
+      {/* Schedule & valves */}
+      <div className="space-y-2">
+        <p className="text-xs text-muted-foreground font-medium">Schedule & Valves</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <TI label="Park time (HH:MM)" value={cfg.park_time} onChange={v => onChange({ park_time: v })} />
+          <TI label="Night end (HH:MM)" value={cfg.night_end} onChange={v => onChange({ night_end: v })} />
+          <NI label="Night valve (%)" value={cfg.night_pos_pct} step={5} min={0} max={100}
+            onChange={v => onChange({ night_pos_pct: v })} />
+          <NI label="Min valve (%)" value={cfg.min_pos_pct} step={5} min={0} max={100}
+            onChange={v => onChange({ min_pos_pct: v })} />
+        </div>
       </div>
 
-      <p className="text-xs text-muted-foreground/60">
-        Changes preview instantly in the chart above. Click Save & Apply to write to the engine.
-      </p>
+      {/* Morning boost */}
+      <div className="space-y-2">
+        <p className="text-xs text-muted-foreground font-medium">
+          Morning Boost
+          <span className="ml-1.5 text-muted-foreground/50 font-normal">
+            (defaults: {globalBoostTime}, {globalBoostTemp}°C, {globalBoostDur}min)
+          </span>
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <TI label="Boost time (HH:MM — blank = global)" value={cfg.morning_boost_time ?? ""}
+            onChange={v => onChange({ morning_boost_time: v || undefined })} />
+          <NI label="Boost target (°C — 0 = global)" value={cfg.morning_boost_temp_c ?? 0} step={0.5} min={0} max={25}
+            onChange={v => onChange({ morning_boost_temp_c: v || null })} />
+          <NI label="Duration (min — 0 = global)" value={cfg.morning_boost_duration_min ?? 0} step={5} min={0} max={240}
+            onChange={v => onChange({ morning_boost_duration_min: v || null })} />
+        </div>
+        <p className="text-xs text-muted-foreground/50">
+          Leave blank / 0 to inherit global defaults from Settings. Set per-room values to override.
+          The chart night band shifts as you change Park time and Night end.
+        </p>
+      </div>
     </div>
   );
 }
 
 // ── Room card ─────────────────────────────────────────────────────────────────
 function RoomCard({
-  room, cfg, history, isNight, onCfgChange, onSave, saving, saved,
+  room, cfg, history, isNight, globalBoostTime, globalBoostTemp, globalBoostDur,
+  onCfgChange, onSave, saving, saved,
 }: {
   room: Room;
   cfg: RoomCfg;
   history: HistoryRow[];
   isNight: boolean;
+  globalBoostTime: string;
+  globalBoostTemp: number;
+  globalBoostDur: number;
   onCfgChange: (patch: Partial<RoomCfg>) => void;
   onSave: () => void;
   saving: boolean;
@@ -456,6 +537,9 @@ function RoomCard({
       {settingsOpen && (
         <SettingsPanel
           cfg={cfg}
+          globalBoostTime={globalBoostTime}
+          globalBoostTemp={globalBoostTemp}
+          globalBoostDur={globalBoostDur}
           onChange={onCfgChange}
           onSave={onSave}
           saving={saving}
@@ -471,6 +555,7 @@ export default function RoomsPage() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [fullConfig, setFullConfig] = useState<FullConfig | null>(null);
   const [localCfgs, setLocalCfgs] = useState<Record<string, RoomCfg>>({});
+  const [globalBoost, setGlobalBoost] = useState({ time: "07:00", temp: 21, dur: 60 });
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [isNight, setIsNight] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -492,6 +577,11 @@ export default function RoomsPage() {
       if (cfgData.status === "fulfilled") {
         const cfg: FullConfig = cfgData.value.config ?? cfgData.value;
         setFullConfig(cfg);
+        setGlobalBoost({
+          time: String(cfg.morning_boost_time ?? "07:00"),
+          temp: Number(cfg.morning_boost_temp_c ?? 21),
+          dur:  Number(cfg.morning_boost_duration_min ?? 60),
+        });
         // Build per-room config map — only initialise if not already edited
         setLocalCfgs(prev => {
           const next: Record<string, RoomCfg> = { ...prev };
@@ -574,6 +664,10 @@ export default function RoomsPage() {
           {rooms.map(room => {
             const cfg = localCfgs[room.name] ?? {
               name: room.name,
+              enabled: room.enabled,
+              room_type: room.room_type,
+              nest_zone_name: room.nest_zone_name,
+              shelly_zones: room.shelly_zones,
               day_target_temp_c: room.day_target_temp_c,
               target_temp_c: room.night_target_temp_c,
               max_temp_c: room.max_temp_c,
@@ -581,6 +675,9 @@ export default function RoomsPage() {
               night_pos_pct: room.night_pos_pct,
               park_time: room.park_time,
               night_end: room.night_end,
+              morning_boost_time: room.morning_boost_time || "",
+              morning_boost_temp_c: room.morning_boost_temp_c,
+              morning_boost_duration_min: room.morning_boost_duration_min,
             };
             return (
               <RoomCard
@@ -589,6 +686,9 @@ export default function RoomsPage() {
                 cfg={cfg}
                 history={history}
                 isNight={isNight}
+                globalBoostTime={globalBoost.time}
+                globalBoostTemp={globalBoost.temp}
+                globalBoostDur={globalBoost.dur}
                 onCfgChange={patch => updateRoomCfg(room.name, patch)}
                 onSave={() => saveRoom(room.name)}
                 saving={savingRoom === room.name}

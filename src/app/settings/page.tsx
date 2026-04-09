@@ -69,7 +69,6 @@ function HeatingConfig() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [expandedRoom, setExpandedRoom] = useState<string | null>(null);
 
   async function loadConfig() {
     setLoading(true);
@@ -92,15 +91,6 @@ function HeatingConfig() {
       setTimeout(() => setSaved(false), 2500);
     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Save failed"); }
     finally { setSaving(false); }
-  }
-
-  function updateRoom(idx: number, patch: Partial<RoomConfig>) {
-    setConfig(prev => {
-      if (!prev) return prev;
-      const rooms = [...prev.rooms];
-      rooms[idx] = { ...rooms[idx], ...patch };
-      return { ...prev, rooms };
-    });
   }
 
   if (loading) return <div className="space-y-3">{[...Array(3)].map((_, i) => <div key={i} className="h-16 rounded-xl bg-muted/30 animate-pulse" />)}</div>;
@@ -130,7 +120,13 @@ function HeatingConfig() {
       </section>
 
       <section className="rounded-xl border border-border/50 bg-card p-4 space-y-4">
-        <h2 className="font-medium text-sm">Morning Boost</h2>
+        <div>
+          <h2 className="font-medium text-sm">Morning Boost Defaults</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Used as fallback for any room without its own boost settings. Configure per-room on the{" "}
+            <a href="/rooms" className="underline hover:text-foreground">Rooms page</a>.
+          </p>
+        </div>
         <div className="grid grid-cols-3 gap-3">
           <TextInput label="Time (HH:MM)" value={config.morning_boost_time}
             onChange={v => setConfig(c => c ? { ...c, morning_boost_time: v } : c)} />
@@ -141,57 +137,11 @@ function HeatingConfig() {
         </div>
       </section>
 
-      <section className="rounded-xl border border-border/50 bg-card overflow-hidden">
-        <div className="px-4 py-3 border-b border-border/40">
-          <h2 className="font-medium text-sm">Rooms ({config.rooms.length})</h2>
-        </div>
-        <div className="divide-y divide-border/30">
-          {config.rooms.map((room, idx) => {
-            const isExpanded = expandedRoom === room.name;
-            return (
-              <div key={room.name}>
-                <button className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-accent/10 transition-colors"
-                  onClick={() => setExpandedRoom(isExpanded ? null : room.name)}>
-                  <span className={`h-2 w-2 rounded-full flex-shrink-0 ${room.enabled ? "bg-green-400" : "bg-muted-foreground/30"}`} />
-                  <span className="flex-1 font-medium text-sm">{room.name}</span>
-                  <Badge variant="outline" className="text-xs text-muted-foreground">{room.room_type}</Badge>
-                  {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                </button>
-                {isExpanded && (
-                  <div className="px-4 pb-4 space-y-4 bg-muted/10">
-                    <Toggle label="Room enabled" value={room.enabled} onChange={v => updateRoom(idx, { enabled: v })} />
-                    <div className="grid grid-cols-2 gap-3">
-                      <label className="flex flex-col gap-1 text-xs text-muted-foreground">Room type
-                        <select value={room.room_type} onChange={e => updateRoom(idx, { room_type: e.target.value as RoomConfig["room_type"] })}
-                          className="rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none">
-                          <option value="bedroom">bedroom</option>
-                          <option value="living">living</option>
-                          <option value="zone_only">zone_only</option>
-                        </select>
-                      </label>
-                      <TextInput label="Nest zone name" value={room.nest_zone_name} onChange={v => updateRoom(idx, { nest_zone_name: v })} />
-                    </div>
-                    <Separator className="bg-border/30" />
-                    <div className="grid grid-cols-2 gap-3">
-                      <NumInput label="Day target (°C)" value={room.day_target_temp_c} step={0.5} min={16} max={25} onChange={v => updateRoom(idx, { day_target_temp_c: v })} />
-                      <NumInput label="Night target (°C)" value={room.target_temp_c} step={0.5} min={14} max={22} onChange={v => updateRoom(idx, { target_temp_c: v })} />
-                      <NumInput label="Ceiling (°C)" value={room.max_temp_c} step={0.5} min={15} max={28} onChange={v => updateRoom(idx, { max_temp_c: v })} />
-                      {room.nest_idle_temp_c != null && (
-                        <NumInput label="Zone idle floor (°C)" value={room.nest_idle_temp_c} step={0.5} min={14} max={24} onChange={v => updateRoom(idx, { nest_idle_temp_c: v })} />
-                      )}
-                    </div>
-                    <Separator className="bg-border/30" />
-                    <div className="grid grid-cols-2 gap-3">
-                      <NumInput label="Min TRV pos (%)" value={room.min_pos_pct} step={5} min={0} max={100} onChange={v => updateRoom(idx, { min_pos_pct: v })} />
-                      <NumInput label="Night park pos (%)" value={room.night_pos_pct} step={5} min={0} max={100} onChange={v => updateRoom(idx, { night_pos_pct: v })} />
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </section>
+      <div className="rounded-xl border border-border/40 bg-muted/10 px-4 py-3 text-sm text-muted-foreground">
+        Room-specific settings (targets, schedule, valves, Nest zone, TRVs, morning boost) are now managed on the{" "}
+        <a href="/rooms" className="underline hover:text-foreground font-medium">Rooms page</a>{" "}
+        where you can see the 24h prediction update as you edit.
+      </div>
     </div>
   );
 }
