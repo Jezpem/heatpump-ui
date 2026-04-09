@@ -447,12 +447,14 @@ interface TrvRow {
 function ValveTest() {
   const [trvs, setTrvs] = useState<TrvRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState<Record<string, number | null>>({});
   const [results, setResults] = useState<Record<string, string>>({});
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     try {
       const data = await api.rooms();
@@ -467,6 +469,7 @@ function ValveTest() {
       setError(e instanceof Error ? e.message : "Failed to load rooms");
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -478,8 +481,14 @@ function ValveTest() {
     setResults(prev => ({ ...prev, [key]: "" }));
     try {
       await api.setValve(trv.device_id, pos, trv.name);
-      setResults(prev => ({ ...prev, [key]: `✓ Set to ${pos}%` }));
-      setTimeout(() => setResults(prev => ({ ...prev, [key]: "" })), 3000);
+      // Optimistically update the displayed valve position
+      setTrvs(prev => prev.map(row =>
+        row.trv.device_id === key
+          ? { ...row, trv: { ...row.trv, valve_pct: pos } }
+          : row
+      ));
+      setResults(prev => ({ ...prev, [key]: `✓ ${pos}%` }));
+      setTimeout(() => setResults(prev => ({ ...prev, [key]: "" })), 4000);
     } catch (e: unknown) {
       setResults(prev => ({ ...prev, [key]: `✗ ${e instanceof Error ? e.message : "Error"}` }));
     } finally {
@@ -501,8 +510,8 @@ function ValveTest() {
         <p className="text-sm text-muted-foreground">
           Set individual TRV valve positions directly for testing. The automation will override these on the next cycle.
         </p>
-        <Button size="sm" variant="outline" onClick={load} className="h-8 gap-1 flex-shrink-0">
-          <RefreshCw className="h-3 w-3" /> Refresh
+        <Button size="sm" variant="outline" onClick={() => load(true)} disabled={refreshing} className="h-8 gap-1 flex-shrink-0">
+          <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} /> Refresh
         </Button>
       </div>
 
