@@ -9,7 +9,7 @@ import {
 } from "recharts";
 import {
   RefreshCw, Thermometer, BatteryLow, Wifi, WifiOff,
-  LayoutGrid, Settings2, Save, ChevronDown, ChevronRight,
+  LayoutGrid, Settings2, Save, ChevronDown, ChevronRight, X, Plus,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -251,12 +251,75 @@ function Toggle({ label, value, onChange }: { label: string; value: boolean; onC
   );
 }
 
+// ── TRV Picker ────────────────────────────────────────────────────────────────
+function TrvPicker({
+  assigned, allZones, onChange,
+}: {
+  assigned: string[];
+  allZones: string[];    // all known Shelly zone names
+  onChange: (zones: string[]) => void;
+}) {
+  const unassigned = allZones.filter(z => !assigned.includes(z));
+
+  function remove(zone: string) {
+    onChange(assigned.filter(z => z !== zone));
+  }
+  function add(zone: string) {
+    if (zone && !assigned.includes(zone)) onChange([...assigned, zone]);
+  }
+
+  return (
+    <div className="flex flex-col gap-2 col-span-2 sm:col-span-4">
+      <span className="text-xs text-muted-foreground">Shelly TRVs assigned to this room</span>
+
+      {/* Assigned chips */}
+      <div className="flex flex-wrap gap-1.5 min-h-[28px]">
+        {assigned.length === 0 && (
+          <span className="text-xs text-muted-foreground/40 italic">No TRVs assigned</span>
+        )}
+        {assigned.map(zone => (
+          <span key={zone}
+            className="inline-flex items-center gap-1 rounded-full border border-teal-500/40 bg-teal-500/10 px-2.5 py-1 text-xs font-medium text-teal-300">
+            {zone}
+            <button type="button" onClick={() => remove(zone)}
+              className="ml-0.5 rounded-full hover:text-red-400 transition-colors">
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        ))}
+      </div>
+
+      {/* Add from remaining list */}
+      {unassigned.length > 0 && (
+        <div className="flex items-center gap-2">
+          <select defaultValue=""
+            onChange={e => { add(e.target.value); e.target.value = ""; }}
+            className="rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring flex-1">
+            <option value="" disabled>Add a TRV…</option>
+            {unassigned.map(z => <option key={z} value={z}>{z}</option>)}
+          </select>
+          <span className="text-xs text-muted-foreground/40 flex items-center gap-1">
+            <Plus className="h-3 w-3" />select to add
+          </span>
+        </div>
+      )}
+      {unassigned.length === 0 && allZones.length > 0 && assigned.length > 0 && (
+        <p className="text-xs text-muted-foreground/40">All known TRVs assigned</p>
+      )}
+      {allZones.length === 0 && (
+        <p className="text-xs text-muted-foreground/40">No Shelly TRVs discovered yet — check Shelly connection</p>
+      )}
+    </div>
+  );
+}
+
 // ── Inline settings panel ─────────────────────────────────────────────────────
 function SettingsPanel({
-  cfg, nestZones, globalBoostTime, globalBoostTemp, globalBoostDur, onChange, onSave, saving, saved,
+  cfg, nestZones, shellyAllZones, globalBoostTime, globalBoostTemp, globalBoostDur, onChange, onSave, saving, saved,
 }: {
   cfg: RoomCfg;
   nestZones: string[];
+  shellyAllZones: string[];
   globalBoostTime: string;
   globalBoostTemp: number;
   globalBoostDur: number;
@@ -265,8 +328,6 @@ function SettingsPanel({
   saving: boolean;
   saved: boolean;
 }) {
-  const shellyStr = (cfg.shelly_zones ?? []).join(", ");
-
   return (
     <div className="border-t border-border/40 px-4 py-4 bg-muted/5 space-y-5">
       <div className="flex items-center justify-between">
@@ -305,13 +366,11 @@ function SettingsPanel({
             <SI label="Nest zone name" value={cfg.nest_zone_name ?? ""} placeholder="e.g. Hallway"
               onChange={v => onChange({ nest_zone_name: v })} />
           )}
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground col-span-1 sm:col-span-2">
-            Shelly TRVs (comma-separated)
-            <input type="text" value={shellyStr}
-              onChange={e => onChange({ shelly_zones: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })}
-              placeholder="e.g. Master Bed 1, Master Bed 2"
-              className="rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
-          </label>
+          <TrvPicker
+            assigned={cfg.shelly_zones ?? []}
+            allZones={shellyAllZones}
+            onChange={zones => onChange({ shelly_zones: zones })}
+          />
         </div>
       </div>
 
@@ -378,13 +437,14 @@ function SettingsPanel({
 
 // ── Room card ─────────────────────────────────────────────────────────────────
 function RoomCard({
-  room, cfg, isNight, nestZones, globalBoostTime, globalBoostTemp, globalBoostDur,
+  room, cfg, isNight, nestZones, shellyAllZones, globalBoostTime, globalBoostTemp, globalBoostDur,
   onCfgChange, onSave, saving, saved,
 }: {
   room: Room;
   cfg: RoomCfg;
   isNight: boolean;
   nestZones: string[];
+  shellyAllZones: string[];
   globalBoostTime: string;
   globalBoostTemp: number;
   globalBoostDur: number;
@@ -558,6 +618,7 @@ function RoomCard({
         <SettingsPanel
           cfg={cfg}
           nestZones={nestZones}
+          shellyAllZones={shellyAllZones}
           globalBoostTime={globalBoostTime}
           globalBoostTemp={globalBoostTemp}
           globalBoostDur={globalBoostDur}
@@ -575,6 +636,7 @@ function RoomCard({
 export default function RoomsPage() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [nestZones, setNestZones] = useState<string[]>([]);
+  const [shellyAllZones, setShellyAllZones] = useState<string[]>([]);
   const [fullConfig, setFullConfig] = useState<FullConfig | null>(null);
   const [localCfgs, setLocalCfgs] = useState<Record<string, RoomCfg>>({});
   const [globalBoost, setGlobalBoost] = useState({ time: "07:00", temp: 21, dur: 60 });
@@ -587,13 +649,18 @@ export default function RoomsPage() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [roomsData, cfgData] = await Promise.allSettled([
-        api.rooms(), api.config(),
+      const [roomsData, cfgData, shellyData] = await Promise.allSettled([
+        api.rooms(), api.config(), api.shellyZones(),
       ]);
       if (roomsData.status === "fulfilled") {
         setRooms((roomsData.value.rooms ?? []).filter((r: Room) => r.enabled));
         setIsNight(roomsData.value.is_night ?? false);
         setNestZones(roomsData.value.nest_zones ?? []);
+      }
+      if (shellyData.status === "fulfilled") {
+        const names: string[] = (shellyData.value.zones ?? [])
+          .map((z: { zone?: string }) => z.zone).filter(Boolean).sort();
+        setShellyAllZones(names);
       }
       if (cfgData.status === "fulfilled") {
         const cfg: FullConfig = cfgData.value.config ?? cfgData.value;
@@ -719,6 +786,7 @@ export default function RoomsPage() {
                 cfg={cfg}
                 isNight={isNight}
                 nestZones={nestZones}
+                shellyAllZones={shellyAllZones}
                 globalBoostTime={globalBoost.time}
                 globalBoostTemp={globalBoost.temp}
                 globalBoostDur={globalBoost.dur}

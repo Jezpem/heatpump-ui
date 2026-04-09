@@ -87,4 +87,7 @@ export const api = {
 
   // ── NeoHub ───────────────────────────────────────────────────────────────
   neohubZones: () => apiFetch("/api/neohub/zones"),
+
+  // ── Shelly ───────────────────────────────────────────────────────────────
+  shellyZones: () => apiFetch("/api/shelly/zones"),
 };
