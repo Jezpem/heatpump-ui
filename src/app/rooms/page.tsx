@@ -671,12 +671,15 @@ export default function RoomsPage() {
           dur:  Number(cfg.morning_boost_duration_min ?? 60),
         });
         // Build per-room config map — only initialise if not already edited
+        // Backend config uses "room_name"; /api/rooms uses "name". Normalise here.
         setLocalCfgs(prev => {
           const next: Record<string, RoomCfg> = { ...prev };
           for (const rc of (cfg.rooms ?? []) as RoomCfg[]) {
-            if (!next[rc.name]) next[rc.name] = {
+            const roomName = (rc as Record<string, unknown>).room_name as string | undefined ?? rc.name;
+            if (!roomName) continue;
+            if (!next[roomName]) next[roomName] = {
               ...rc,
-              // Ensure day target never falls back to undefined/NaN
+              name: roomName,
               day_target_temp_c: rc.day_target_temp_c ?? rc.target_temp_c ?? 21,
               target_temp_c: rc.target_temp_c ?? 18,
               max_temp_c: rc.max_temp_c ?? 22,
@@ -717,9 +720,11 @@ export default function RoomsPage() {
     try {
       const updatedConfig: FullConfig = {
         ...fullConfig,
-        rooms: fullConfig.rooms.map(r =>
-          r.name === roomName ? { ...r, ...localCfgs[roomName] } : r
-        ),
+        rooms: fullConfig.rooms.map(r => {
+          const rName = (r as Record<string, unknown>).room_name as string | undefined ?? r.name;
+          if (rName !== roomName) return r;
+          return { ...r, ...localCfgs[roomName], room_name: roomName };
+        }),
       };
       await api.saveConfig(updatedConfig);
       setFullConfig(updatedConfig);
