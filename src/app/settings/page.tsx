@@ -540,6 +540,186 @@ function ValveTest() {
   );
 }
 
+// ── Connections tab ────────────────────────────────────────────────────────────
+
+interface NestSettings {
+  project_id: string; client_id: string;
+  client_secret_masked: string; refresh_token_masked: string;
+  has_client_secret: boolean; has_refresh_token: boolean; has_access_token: boolean;
+}
+
+interface ShellySettings {
+  gateway_ips: string[];
+  trv_mapping: Record<string, unknown>;
+}
+
+function ConnectionSettings() {
+  const [nest, setNest] = useState<NestSettings | null>(null);
+  const [shelly, setShelly] = useState<ShellySettings | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Nest edit state
+  const [nestProjectId, setNestProjectId] = useState("");
+  const [nestClientId, setNestClientId] = useState("");
+  const [nestClientSecret, setNestClientSecret] = useState("");
+  const [nestRefreshToken, setNestRefreshToken] = useState("");
+  const [nestSaving, setNestSaving] = useState(false);
+  const [nestSaved, setNestSaved] = useState(false);
+
+  // Shelly edit state
+  const [gwIps, setGwIps] = useState("");
+  const [shellySaving, setShellySaving] = useState(false);
+  const [shellySaved, setShellySaved] = useState(false);
+
+  async function loadAll() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [n, s] = await Promise.all([api.nestSettings(), api.shellySettings()]);
+      setNest(n);
+      setShelly(s);
+      setNestProjectId(n.project_id ?? "");
+      setNestClientId(n.client_id ?? "");
+      setNestClientSecret("");
+      setNestRefreshToken("");
+      setGwIps((s.gateway_ips ?? []).join(", "));
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Failed to load"); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { loadAll(); }, []);
+
+  async function saveNest() {
+    setNestSaving(true);
+    setError(null);
+    try {
+      const body: Record<string, string | null> = {};
+      if (nestProjectId) body.project_id = nestProjectId;
+      if (nestClientId) body.client_id = nestClientId;
+      if (nestClientSecret) body.client_secret = nestClientSecret;
+      if (nestRefreshToken) body.refresh_token = nestRefreshToken;
+      await api.saveNestSettings(body);
+      setNestSaved(true);
+      setTimeout(() => setNestSaved(false), 2500);
+      setNestClientSecret("");
+      setNestRefreshToken("");
+      await loadAll();
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Save failed"); }
+    finally { setNestSaving(false); }
+  }
+
+  async function saveShelly() {
+    setShellySaving(true);
+    setError(null);
+    try {
+      const ips = gwIps.split(",").map(s => s.trim()).filter(Boolean);
+      await api.saveShellySettings({ gateway_ips: ips });
+      setShellySaved(true);
+      setTimeout(() => setShellySaved(false), 2500);
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Save failed"); }
+    finally { setShellySaving(false); }
+  }
+
+  if (loading) return <div className="space-y-3">{[...Array(3)].map((_, i) => <div key={i} className="h-16 rounded-xl bg-muted/30 animate-pulse" />)}</div>;
+
+  return (
+    <div className="space-y-5 max-w-2xl">
+      {error && <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-300">{error}</div>}
+
+      {/* Nest */}
+      <section className="rounded-xl border border-border/50 bg-card p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="font-medium text-sm">Google Nest</h2>
+          <div className="flex items-center gap-2">
+            {nest?.has_refresh_token ? (
+              <Badge variant="outline" className="text-green-400 border-green-500/30">Connected</Badge>
+            ) : (
+              <Badge variant="outline" className="text-red-400 border-red-500/30">Not configured</Badge>
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <TextInput label="Project ID" value={nestProjectId} onChange={setNestProjectId}
+            placeholder="e.g. 1a2b3c4d-5e6f-..." />
+          <TextInput label="Client ID" value={nestClientId} onChange={setNestClientId}
+            placeholder="e.g. 123456789-abc.apps.googleusercontent.com" />
+          <div className="space-y-1">
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              Client Secret {nest?.has_client_secret && <span className="text-green-400/70">(saved: {nest.client_secret_masked})</span>}
+              <input type="password" value={nestClientSecret} placeholder="Leave blank to keep current"
+                onChange={e => setNestClientSecret(e.target.value)}
+                className="w-full rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
+            </label>
+          </div>
+          <div className="space-y-1">
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              Refresh Token {nest?.has_refresh_token && <span className="text-green-400/70">(saved: {nest.refresh_token_masked})</span>}
+              <input type="password" value={nestRefreshToken} placeholder="Leave blank to keep current"
+                onChange={e => setNestRefreshToken(e.target.value)}
+                className="w-full rounded-md border border-border/50 bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring" />
+            </label>
+          </div>
+        </div>
+
+        {nest?.has_refresh_token && nestProjectId && nestClientId && (
+          <div className="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-300">
+            To re-authorize Nest, visit the{" "}
+            <a href={`https://nestservices.google.com/partnerconnections/${nestProjectId}/auth?redirect_uri=https://www.google.com&access_type=offline&prompt=consent&client_id=${nestClientId}&response_type=code&scope=https://www.googleapis.com/auth/sdm.service`}
+              target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-200">
+              Google authorization page
+            </a>, then paste the new refresh token above.
+          </div>
+        )}
+
+        <div className="flex justify-end">
+          <Button size="sm" onClick={saveNest} disabled={nestSaving} className="h-8 gap-1">
+            <Save className="h-3 w-3" />{nestSaving ? "Saving…" : nestSaved ? "Saved!" : "Save Nest"}
+          </Button>
+        </div>
+      </section>
+
+      {/* Shelly */}
+      <section className="rounded-xl border border-border/50 bg-card p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="font-medium text-sm">Shelly TRV Gateways</h2>
+          <Badge variant="outline" className={shelly?.gateway_ips?.length ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}>
+            {shelly?.gateway_ips?.length ?? 0} gateway{(shelly?.gateway_ips?.length ?? 0) !== 1 ? "s" : ""}
+          </Badge>
+        </div>
+
+        <TextInput label="Gateway IPs (comma-separated)" value={gwIps} onChange={setGwIps}
+          placeholder="e.g. 10.10.200.105, 10.10.200.114, 10.10.200.131" />
+        <p className="text-xs text-muted-foreground">
+          These are the local IPs of your Shelly Pro gateways that bridge BluTRV devices via Bluetooth.
+          Reached via Tailscale subnet routing from Railway.
+        </p>
+
+        {shelly?.trv_mapping && Object.keys(shelly.trv_mapping).length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground font-medium">TRV Mapping</p>
+            <div className="rounded-lg border border-border/40 overflow-hidden divide-y divide-border/30">
+              {Object.entries(shelly.trv_mapping).map(([deviceId, info]) => (
+                <div key={deviceId} className="flex items-center justify-between px-3 py-2 text-xs">
+                  <span className="font-mono text-muted-foreground">{deviceId}</span>
+                  <span>{typeof info === "string" ? info : JSON.stringify(info)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="flex justify-end">
+          <Button size="sm" onClick={saveShelly} disabled={shellySaving} className="h-8 gap-1">
+            <Save className="h-3 w-3" />{shellySaving ? "Saving…" : shellySaved ? "Saved!" : "Save Shelly"}
+          </Button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function SettingsPage() {
   return (
@@ -552,6 +732,7 @@ export default function SettingsPage() {
       <Tabs defaultValue="heating">
         <TabsList className="mb-5">
           <TabsTrigger value="heating">Heating</TabsTrigger>
+          <TabsTrigger value="connections">Connections</TabsTrigger>
           <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
           <TabsTrigger value="valves">Valve Test</TabsTrigger>
           <TabsTrigger value="cameras">Cameras</TabsTrigger>
@@ -559,6 +740,7 @@ export default function SettingsPage() {
         </TabsList>
 
         <TabsContent value="heating"><HeatingConfig /></TabsContent>
+        <TabsContent value="connections"><ConnectionSettings /></TabsContent>
         <TabsContent value="diagnostics"><Diagnostics /></TabsContent>
         <TabsContent value="valves"><ValveTest /></TabsContent>
         <TabsContent value="cameras"><CameraSettings /></TabsContent>

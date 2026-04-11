@@ -82,6 +82,14 @@ export const api = {
     apiFetch("/api/cameras/ptz", { method: "POST", body: JSON.stringify({ type, payload, camera_id: cameraId }) }),
   cameraSnapshotUrl: (camId: string) => `${BASE}/api/cameras/snapshot/${camId}`,
 
+  // ── Settings ─────────────────────────────────────────────────────────────
+  nestSettings: () => apiFetch("/api/settings/nest"),
+  saveNestSettings: (body: { project_id?: string; client_id?: string; client_secret?: string | null; refresh_token?: string | null }) =>
+    apiFetch("/api/settings/nest", { method: "POST", body: JSON.stringify(body) }),
+  shellySettings: () => apiFetch("/api/settings/shelly"),
+  saveShellySettings: (body: { gateway_ips?: string[]; trv_mapping?: Record<string, unknown> }) =>
+    apiFetch("/api/settings/shelly", { method: "POST", body: JSON.stringify(body) }),
+
   // ── Diagnostics ──────────────────────────────────────────────────────────
   diagnostics: () => apiFetch("/api/diagnostics"),
 
