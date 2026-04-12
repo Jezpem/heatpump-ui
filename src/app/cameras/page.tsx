@@ -14,6 +14,9 @@ const UNIFI_TURRET_ID = process.env.NEXT_PUBLIC_UNIFI_CAMERA_ID ?? "";
 // Direct camera IP for live view (on local subnet / Tailscale)
 const PTZ_IP = process.env.NEXT_PUBLIC_UNIFI_PTZ_IP ?? "10.10.200.81";
 
+// UniFi Share Link for WebRTC live stream (preferred over snapshot polling)
+const SHARE_URL = process.env.NEXT_PUBLIC_UNIFI_SHARE_URL ?? "";
+
 function nvrUrl(path: string) {
   return `${NVR_URL}/proxy/protect/api/${path}`;
 }
@@ -165,15 +168,16 @@ function PtzControls({ presets }: { presets: Array<{ name: string; slot: number 
   );
 }
 
-// ── Live PTZ view — snapshot feed from NVR + direct camera link ───────────────
+// ── Live PTZ view — WebRTC share link (preferred) or snapshot feed fallback ──
 function PtzLiveView() {
+  const [mode, setMode] = useState<"stream" | "snapshots">(SHARE_URL ? "stream" : "snapshots");
   const [src, setSrc] = useState<string | null>(null);
   const [ts, setTs] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const prevUrl = useRef<string | null>(null);
 
   const fetchSnap = useCallback(async () => {
-    // Try NVR snapshot API first (via Tailscale)
+    if (mode !== "snapshots") return;
     if (NVR_URL && UNIFI_KEY && UNIFI_PTZ_ID) {
       try {
         const r = await fetch(nvrUrl(`cameras/${UNIFI_PTZ_ID}/snapshot?ts=${Date.now()}`), {
@@ -195,46 +199,58 @@ function PtzLiveView() {
         setErr(String(e));
       }
     }
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
+    if (mode !== "snapshots") return;
     fetchSnap();
     const t = setInterval(fetchSnap, 3000);
     return () => {
       clearInterval(t);
       if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
     };
-  }, [fetchSnap]);
+  }, [fetchSnap, mode]);
 
   return (
     <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 border-b border-border/40">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">G5 PTZ — Live</span>
-          {src && !err && <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">Live</Badge>}
-          {err && <Badge variant="outline" className="text-xs text-amber-400 border-amber-500/30">{err}</Badge>}
+          {mode === "stream" && <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">WebRTC</Badge>}
+          {mode === "snapshots" && src && !err && <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/30">Snapshots</Badge>}
+          {mode === "snapshots" && err && <Badge variant="outline" className="text-xs text-amber-400 border-amber-500/30">{err}</Badge>}
         </div>
         <div className="flex items-center gap-3">
-          {ts && <span className="text-xs text-muted-foreground">{ts}</span>}
+          {SHARE_URL && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-xs"
+              onClick={() => setMode(m => m === "stream" ? "snapshots" : "stream")}
+            >
+              {mode === "stream" ? "Snapshots" : "Live Stream"}
+            </Button>
+          )}
+          {mode === "snapshots" && ts && <span className="text-xs text-muted-foreground">{ts}</span>}
           <a
-            href={`http://${PTZ_IP}`}
+            href={SHARE_URL || `http://${PTZ_IP}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
           >
             <ExternalLink className="h-3 w-3" /> Open camera
           </a>
-          <a
-            href={`${NVR_URL}/protect/cameras/${UNIFI_PTZ_ID}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
-          >
-            <ExternalLink className="h-3 w-3" /> Open Protect
-          </a>
         </div>
       </div>
-      {src ? (
+      {mode === "stream" ? (
+        <iframe
+          src={SHARE_URL}
+          className="w-full border-0"
+          style={{ height: 420 }}
+          allow="autoplay; fullscreen"
+          allowFullScreen
+        />
+      ) : src ? (
         <img src={src} className="w-full object-cover" style={{ height: 420 }} alt="PTZ Live" />
       ) : (
         <div className="flex flex-col items-center justify-center gap-3 bg-muted/20" style={{ height: 420 }}>
