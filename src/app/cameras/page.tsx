@@ -59,16 +59,11 @@ function PtzControls({ presets }: { presets: Array<{ name: string; slot: number 
     setStatus("↗ sending…");
     let result: { ok: boolean; status: number; error?: string };
 
-    if (NVR_URL && UNIFI_KEY && UNIFI_PTZ_ID) {
-      result = await nvrPost(`cameras/${UNIFI_PTZ_ID}/move`, { type, payload });
-    } else {
-      // Fallback through Railway proxy
-      try {
-        await api.cameraPtz(type, payload);
-        result = { ok: true, status: 200 };
-      } catch {
-        result = { ok: false, status: 0 };
-      }
+    try {
+      await api.cameraPtz(type, payload);
+      result = { ok: true, status: 200 };
+    } catch (e) {
+      result = { ok: false, status: 0, error: String(e) };
     }
 
     setStatus(result.ok ? "✓" : `⚠ ${result.status || result.error || "error"}`);
