@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, ReferenceLine, Cell,
+  Tooltip, Legend, ResponsiveContainer, Cell,
 } from "recharts";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -145,7 +145,7 @@ function LiveRates({ rates, current, dispatches }: {
               <YAxis tick={{ fontSize: 10, fill: "rgba(255,255,255,0.4)" }} unit="p" />
               <Tooltip
                 contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-                formatter={(v: number) => [`${v.toFixed(1)}p/kWh`]}
+                formatter={(v) => [`${Number(v).toFixed(1)}p/kWh`]}
               />
               <Bar dataKey="rate" name="Rate">
                 {chartData.map((d, i) => (
@@ -259,7 +259,7 @@ function ConsumptionCosts({ daily, summary }: {
             <YAxis tick={{ fontSize: 10, fill: "rgba(255,255,255,0.4)" }} unit="£" />
             <Tooltip
               contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-              formatter={(v: number) => [`£${v.toFixed(2)}`]}
+              formatter={(v) => [`£${Number(v).toFixed(2)}`]}
             />
             <Legend wrapperStyle={{ fontSize: 11 }} />
             <Bar dataKey="offpeak" stackId="a" fill="#22c55e" name="Off-Peak" />
@@ -278,7 +278,7 @@ function ConsumptionCosts({ daily, summary }: {
             <YAxis tick={{ fontSize: 10, fill: "rgba(255,255,255,0.4)" }} />
             <Tooltip
               contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-              formatter={(v: number) => [`${v.toFixed(1)} kWh`]}
+              formatter={(v) => [`${Number(v).toFixed(1)} kWh`]}
             />
             <Legend wrapperStyle={{ fontSize: 11 }} />
             <Bar dataKey="offpeak" stackId="a" fill="#22c55e" name="Off-Peak" />
