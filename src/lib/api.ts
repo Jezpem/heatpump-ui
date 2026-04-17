@@ -98,4 +98,14 @@ export const api = {
 
   // ── Shelly ───────────────────────────────────────────────────────────────
   shellyZones: () => apiFetch("/api/shelly/zones"),
+
+  // ── Octopus Energy ─────────────────────────────────────────────────────
+  octopusConfig: () => apiFetch("/api/octopus/config"),
+  saveOctopusConfig: (apiKey: string, accountNumber: string) =>
+    apiFetch("/api/octopus/config", { method: "POST", body: JSON.stringify({ api_key: apiKey, account_number: accountNumber }) }),
+  octopusRates: (hours = 24) => apiFetch(`/api/octopus/rates?hours=${hours}`),
+  octopusConsumption: (days = 30) => apiFetch(`/api/octopus/consumption?days=${days}`),
+  octopusDispatches: () => apiFetch("/api/octopus/dispatches"),
+  octopusCostSummary: (days = 30) => apiFetch(`/api/octopus/cost-summary?days=${days}`),
+  octopusSync: () => apiFetch("/api/octopus/sync", { method: "POST" }),
 };
