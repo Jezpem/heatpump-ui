@@ -29,19 +29,86 @@ function Metric({ label, value, unit, sub, warn }: {
 }
 
 // ── Overview tab ─────────────────────────────────────────────────────────────
+type Service = { enabled: boolean; active: boolean };
+
 type HpStatus = {
   alarm_active: boolean; alarm_text: string | null;
-  heating: { enabled: boolean; setpoint_c: number | null; cutoff_c: number | null };
-  dhw: {
-    enabled: boolean;
+  power_on: boolean;
+  season_program: string | null;
+  heating: Service & {
     setpoint_c: number | null;
+    cutoff_c: number | null;
+    restart_delta_c: number | null;
+  };
+  dhw: Service & {
+    setpoint_c: number | null;
+    restart_delta_c: number | null;
     recirculation_enabled: boolean;
     recirculation_c: number | null;
     recirculation_delta: number | null;
   };
-  cooling: { enabled: boolean };
+  cooling: Service;
   ts: string;
 };
+
+// ── Service state ────────────────────────────────────────────────────────────
+type Tone = "active" | "idle" | "off" | "unknown";
+type ServiceState = { label: string; sub?: string; tone: Tone };
+
+/**
+ * Resolve a service to the label the card shows.
+ *
+ * Enablement and activity are separate axes: `enabled` is what is switched on
+ * in configuration, `active` is what the compressor is serving right now. Only
+ * configuration — or the unit being powered down — reads "Off"; an enabled
+ * service that is not running is either satisfied or below the threshold that
+ * restarts it. The unit reports no anti-cycle, defrost or legionella register,
+ * so "Waiting to start" is as specific as the observable state allows.
+ */
+function serviceState(
+  svc: Service | undefined,
+  powerOn: boolean | undefined,
+  activeLabel: string,
+  band: { tempC?: number | null; setpointC?: number | null; restartDeltaC?: number | null } = {},
+): ServiceState {
+  if (!svc) return { label: "Unknown", tone: "unknown" };
+  if (powerOn === false || !svc.enabled) return { label: "Off", tone: "off" };
+  if (svc.active) return { label: activeLabel, tone: "active" };
+
+  const { tempC, setpointC, restartDeltaC } = band;
+  const restartBelow = setpointC != null && restartDeltaC != null ? setpointC - restartDeltaC : null;
+  if (tempC == null || restartBelow == null) return { label: "Idle", tone: "idle" };
+
+  const sub = `restarts below ${restartBelow.toFixed(1)}°C`;
+  return tempC >= restartBelow
+    ? { label: "Idle — satisfied", sub, tone: "idle" }
+    : { label: "Waiting to start", sub, tone: "idle" };
+}
+
+// Accent is per service, but only an active service wears it — an enabled and
+// idle one must not look the same as one that is running.
+const TONE_CLASSES: Record<string, string> = {
+  "heating:active": "border-orange-500/40 bg-orange-500/15 text-orange-300",
+  "dhw:active": "border-blue-500/40 bg-blue-500/15 text-blue-300",
+  "cooling:active": "border-cyan-500/40 bg-cyan-500/15 text-cyan-300",
+  idle: "border-border/50 bg-card text-foreground",
+  off: "border-border/40 bg-muted/20 text-muted-foreground",
+  unknown: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+};
+
+function ServiceCard({ service, label, state, target }: {
+  service: "heating" | "dhw" | "cooling"; label: string; state: ServiceState; target?: string;
+}) {
+  const cls = TONE_CLASSES[state.tone === "active" ? `${service}:active` : state.tone];
+  return (
+    <div className={`rounded-xl border px-4 py-3 ${cls}`}>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="font-semibold mt-1">{state.label}</p>
+      {state.sub && <p className="text-xs text-muted-foreground mt-0.5">{state.sub}</p>}
+      {target && <p className="text-xs text-muted-foreground">{target}</p>}
+    </div>
+  );
+}
 
 type HpRealtime = {
   temperatures: Record<string, { value: number; unit: string }>;
@@ -49,7 +116,9 @@ type HpRealtime = {
   ts: string;
 };
 
-function Overview({ status, dhwTemp }: { status: HpStatus | null; dhwTemp: number | null }) {
+function Overview({ status, bufferTemp, dhwTemp }: {
+  status: HpStatus | null; bufferTemp: number | null; dhwTemp: number | null;
+}) {
   if (!status) return <p className="text-muted-foreground text-sm">Loading…</p>;
   const recirc = status.dhw;
   const recircOn = recirc?.recirculation_enabled;
@@ -68,22 +137,26 @@ function Overview({ status, dhwTemp }: { status: HpStatus | null; dhwTemp: numbe
         </div>
       )}
 
-      {/* Mode cards */}
+      {/* Service cards */}
       <div className="grid grid-cols-3 gap-3">
-        <div className={`rounded-xl border px-4 py-3 ${status.heating?.enabled ? "border-orange-500/30 bg-orange-500/10" : "border-border/40 bg-muted/20"}`}>
-          <p className="text-xs text-muted-foreground">Heating</p>
-          <p className="font-semibold mt-1">{status.heating?.enabled ? "On" : "Off"}</p>
-          {status.heating?.setpoint_c != null && <p className="text-xs text-muted-foreground">Target {status.heating.setpoint_c.toFixed(1)}°C</p>}
-        </div>
-        <div className={`rounded-xl border px-4 py-3 ${status.dhw?.enabled ? "border-blue-500/30 bg-blue-500/10" : "border-border/40 bg-muted/20"}`}>
-          <p className="text-xs text-muted-foreground">Hot Water</p>
-          <p className="font-semibold mt-1">{status.dhw?.enabled ? "On" : "Off"}</p>
-          {status.dhw?.setpoint_c != null && <p className="text-xs text-muted-foreground">Target {status.dhw.setpoint_c.toFixed(1)}°C</p>}
-        </div>
-        <div className={`rounded-xl border px-4 py-3 ${status.cooling?.enabled ? "border-cyan-500/30 bg-cyan-500/10" : "border-border/40 bg-muted/20"}`}>
-          <p className="text-xs text-muted-foreground">Cooling</p>
-          <p className="font-semibold mt-1">{status.cooling?.enabled ? "On" : "Off"}</p>
-        </div>
+        <ServiceCard service="heating" label="Heating"
+          state={serviceState(status.heating, status.power_on, "Heating now", {
+            tempC: bufferTemp,
+            setpointC: status.heating?.setpoint_c,
+            restartDeltaC: status.heating?.restart_delta_c,
+          })}
+          target={status.heating?.setpoint_c != null ? `Target ${status.heating.setpoint_c.toFixed(1)}°C` : undefined} />
+        <ServiceCard service="dhw" label="Hot Water"
+          state={serviceState(status.dhw, status.power_on, "Heating water", {
+            tempC: dhwTemp,
+            setpointC: status.dhw?.setpoint_c,
+            restartDeltaC: status.dhw?.restart_delta_c,
+          })}
+          target={status.dhw?.setpoint_c != null ? `Target ${status.dhw.setpoint_c.toFixed(1)}°C` : undefined} />
+        {/* No cooling setpoint or flow temperature is exposed, so there is
+            nothing to compare an idle compressor against. */}
+        <ServiceCard service="cooling" label="Cooling"
+          state={serviceState(status.cooling, status.power_on, "Cooling now")} />
       </div>
 
       {/* Recirculation panel */}
@@ -162,7 +235,8 @@ function Temperatures({ realtime }: { realtime: HpRealtime | null }) {
       {/* Heating circuit temps */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Metric label="Flow (T1)" value={get("Flow Temperature")?.toFixed(1) ?? null} unit="°C" />
-        <Metric label="Return (T2)" value={get("Return Temperature")?.toFixed(1) ?? null} unit="°C" />
+        <Metric label="Return (T2)" value={get("Return Temperature")?.toFixed(1) ?? null} unit="°C"
+          sub={get("Return Temperature") == null ? "no sensor on this unit" : undefined} />
         <Metric label="Outdoor" value={get("Outdoor Temperature")?.toFixed(1) ?? null} unit="°C" />
         <Metric label="Heating Outlet 2" value={get("Heating Circuit Outlet 2")?.toFixed(1) ?? null} unit="°C" />
       </div>
@@ -358,7 +432,9 @@ export default function HeatPumpPage() {
         api.hpRealtime(), api.hpStatus(), api.hpEnergy(30), api.hpAlarms(),
       ]);
       if (rt.status === "fulfilled") setRealtime(rt.value);
-      if (st.status === "fulfilled") setStatus(st.value);
+      // A failed read must clear the status, not leave a stale one on screen —
+      // the cards fall back to "Unknown" rather than reporting the last state.
+      setStatus(st.status === "fulfilled" ? st.value : null);
       if (en.status === "fulfilled") setEnergyRows(en.value.rows ?? []);
       if (al.status === "fulfilled") setAlarms(al.value);
       setLastUpdate(new Date());
@@ -397,16 +473,18 @@ export default function HeatPumpPage() {
       </div>
 
       {/* Top metrics strip */}
+      {/* Flow → Return ΔT is omitted when there is no return reading: this unit
+          has no return sensor, and a permanent "—" reads as a fault. */}
       {!loading && (
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-5">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
           <Metric label="Buffer Tank" value={tank?.buffer_temp_c?.toFixed(1) ?? null} unit="°C"
             sub={tank?.buffer_setpoint_c != null ? `→ ${tank.buffer_setpoint_c.toFixed(1)}°C` : undefined} />
           <Metric label="DHW Cylinder" value={tank?.dhw_temp_c?.toFixed(1) ?? null} unit="°C"
             sub={tank?.dhw_setpoint_c != null ? `→ ${tank.dhw_setpoint_c.toFixed(1)}°C` : undefined} />
           <Metric label="Recirc Setpoint" value={status?.dhw?.recirculation_c?.toFixed(1) ?? null} unit="°C"
             sub={status?.dhw?.recirculation_enabled ? "Enabled" : "Disabled"} />
-          <Metric label="Flow → Return ΔT" value={dT} unit="°C" />
           <Metric label="Outdoor" value={temps?.["Outdoor Temperature"]?.value?.toFixed(1) ?? null} unit="°C" />
+          {dT != null && <Metric label="Flow → Return ΔT" value={dT} unit="°C" />}
         </div>
       )}
 
@@ -425,7 +503,7 @@ export default function HeatPumpPage() {
             {hpUrl && <TabsTrigger value="native">Native UI</TabsTrigger>}
           </TabsList>
 
-          <TabsContent value="overview"><Overview status={status} dhwTemp={tank?.dhw_temp_c ?? null} /></TabsContent>
+          <TabsContent value="overview"><Overview status={status} bufferTemp={tank?.buffer_temp_c ?? null} dhwTemp={tank?.dhw_temp_c ?? null} /></TabsContent>
           <TabsContent value="temperatures"><Temperatures realtime={realtime} /></TabsContent>
           <TabsContent value="energy"><Energy rows={energyRows} onLog={fetchAll} /></TabsContent>
           <TabsContent value="alarms"><Alarms data={alarms} /></TabsContent>
