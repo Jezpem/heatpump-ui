@@ -1,0 +1,540 @@
+"use client";
+import { useCallback, useEffect, useState } from "react";
+import { api } from "@/lib/api";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import {
+  Droplets, Zap, AlertTriangle, ExternalLink, RefreshCw, Sparkles, Loader2
+} from "lucide-react";
+import {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, Legend, ResponsiveContainer
+} from "recharts";
+
+// ── Types ────────────────────────────────────────────────────────────────────
+type Service = { enabled: boolean; active: boolean };
+
+export type HpStatus = {
+  alarm_active: boolean; alarm_text: string | null;
+  power_on: boolean;
+  season_program: string | null;
+  heating: Service & {
+    setpoint_c: number | null;
+    cutoff_c: number | null;
+    restart_delta_c: number | null;
+  };
+  dhw: Service & {
+    setpoint_c: number | null;
+    restart_delta_c: number | null;
+    recirculation_enabled: boolean;
+    recirculation_c: number | null;
+    recirculation_delta: number | null;
+  };
+  cooling: Service;
+  ts: string;
+};
+
+type HpRealtime = {
+  temperatures: Record<string, { value: number; unit: string }>;
+  tank: { buffer_temp_c: number | null; buffer_setpoint_c: number | null; dhw_temp_c: number | null; dhw_setpoint_c: number | null };
+  ts: string;
+};
+
+type HpAlarms = {
+  alarm_active: boolean; alarm_text: string | null;
+  slots: Array<{ slot: number; code: string; description: string }>;
+  ts: string;
+};
+
+type EnergyRow = Record<string, unknown>;
+
+// ── Metric card ──────────────────────────────────────────────────────────────
+function Metric({ label, value, unit, sub, warn }: {
+  label: string; value: string | number | null; unit?: string;
+  sub?: string; warn?: boolean;
+}) {
+  return (
+    <div className={`rounded-xl border px-4 py-3 ${warn ? "border-red-500/40 bg-red-500/10" : "border-border/50 bg-card"}`}>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className={`text-2xl font-semibold tabular-nums mt-0.5 ${warn ? "text-red-400" : ""}`}>
+        {value != null ? `${value}${unit ?? ""}` : "—"}
+      </p>
+      {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
+    </div>
+  );
+}
+
+// ── Service state ────────────────────────────────────────────────────────────
+type Tone = "active" | "idle" | "off" | "unknown";
+type ServiceState = { label: string; sub?: string; tone: Tone };
+
+/**
+ * Resolve a service to the label the card shows.
+ *
+ * Enablement and activity are separate axes: `enabled` is what is switched on
+ * in configuration, `active` is what the compressor is serving right now. Only
+ * configuration — or the unit being powered down — reads "Off"; an enabled
+ * service that is not running is either satisfied or below the threshold that
+ * restarts it. The unit reports no anti-cycle, defrost or legionella register,
+ * so "Waiting to start" is as specific as the observable state allows.
+ */
+function serviceState(
+  svc: Service | undefined,
+  powerOn: boolean | undefined,
+  activeLabel: string,
+  band: { tempC?: number | null; setpointC?: number | null; restartDeltaC?: number | null } = {},
+): ServiceState {
+  if (!svc) return { label: "Unknown", tone: "unknown" };
+  if (powerOn === false || !svc.enabled) return { label: "Off", tone: "off" };
+  if (svc.active) return { label: activeLabel, tone: "active" };
+
+  const { tempC, setpointC, restartDeltaC } = band;
+  const restartBelow = setpointC != null && restartDeltaC != null ? setpointC - restartDeltaC : null;
+  if (tempC == null || restartBelow == null) return { label: "Idle", tone: "idle" };
+
+  const sub = `restarts below ${restartBelow.toFixed(1)}°C`;
+  return tempC >= restartBelow
+    ? { label: "Idle — satisfied", sub, tone: "idle" }
+    : { label: "Waiting to start", sub, tone: "idle" };
+}
+
+// Accent is per service, but only an active service wears it — an enabled and
+// idle one must not look the same as one that is running.
+const TONE_CLASSES: Record<string, string> = {
+  "heating:active": "border-orange-500/40 bg-orange-500/15 text-orange-300",
+  "dhw:active": "border-blue-500/40 bg-blue-500/15 text-blue-300",
+  "cooling:active": "border-cyan-500/40 bg-cyan-500/15 text-cyan-300",
+  idle: "border-border/50 bg-card text-foreground",
+  off: "border-border/40 bg-muted/20 text-muted-foreground",
+  unknown: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+};
+
+function ServiceCard({ service, label, state, target }: {
+  service: "heating" | "dhw" | "cooling"; label: string; state: ServiceState; target?: string;
+}) {
+  const cls = TONE_CLASSES[state.tone === "active" ? `${service}:active` : state.tone];
+  return (
+    <div className={`rounded-xl border px-4 py-3 ${cls}`}>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="font-semibold mt-1">{state.label}</p>
+      {state.sub && <p className="text-xs text-muted-foreground mt-0.5">{state.sub}</p>}
+      {target && <p className="text-xs text-muted-foreground">{target}</p>}
+    </div>
+  );
+}
+
+// ── Data ─────────────────────────────────────────────────────────────────────
+export type HeatPump = ReturnType<typeof useHeatPump>;
+
+export function useHeatPump() {
+  const [realtime, setRealtime] = useState<HpRealtime | null>(null);
+  const [status, setStatus] = useState<HpStatus | null>(null);
+  const [energyRows, setEnergyRows] = useState<EnergyRow[]>([]);
+  const [alarms, setAlarms] = useState<HpAlarms | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [rt, st, en, al] = await Promise.allSettled([
+        api.hpRealtime(), api.hpStatus(), api.hpEnergy(30), api.hpAlarms(),
+      ]);
+      setRealtime(rt.status === "fulfilled" ? rt.value : null);
+      // A failed read must clear the status, not leave a stale one on screen —
+      // the cards fall back to "Unknown" rather than reporting the last state.
+      setStatus(st.status === "fulfilled" ? st.value : null);
+      if (en.status === "fulfilled") setEnergyRows(en.value.rows ?? []);
+      if (al.status === "fulfilled") setAlarms(al.value);
+      setLastUpdate(new Date());
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => { refresh(); const t = setInterval(refresh, 60_000); return () => clearInterval(t); }, [refresh]);
+
+  return {
+    realtime, status, energyRows, alarms, loading, refreshing, lastUpdate,
+    refresh, setRefreshing,
+  };
+}
+
+// ── Summary — metric strip and service cards ─────────────────────────────────
+export function HeatPumpSummary({ hp }: { hp: HeatPump }) {
+  const { realtime, status, loading, refreshing, lastUpdate, refresh, setRefreshing } = hp;
+  const tank = realtime?.tank;
+  const temps = realtime?.temperatures;
+  const flowTemp = temps?.["Flow Temperature"]?.value;
+  const returnTemp = temps?.["Return Temperature"]?.value;
+  const dT = flowTemp != null && returnTemp != null ? (flowTemp - returnTemp).toFixed(1) : null;
+
+  const heating = serviceState(status?.heating, status?.power_on, "Heating now", {
+    tempC: tank?.buffer_temp_c,
+    setpointC: status?.heating?.setpoint_c,
+    restartDeltaC: status?.heating?.restart_delta_c,
+  });
+  const dhw = serviceState(status?.dhw, status?.power_on, "Heating water", {
+    tempC: tank?.dhw_temp_c,
+    setpointC: status?.dhw?.setpoint_c,
+    restartDeltaC: status?.dhw?.restart_delta_c,
+  });
+  // No cooling setpoint or flow temperature is exposed, so there is nothing to
+  // compare an idle compressor against — say "Idle" rather than guess which.
+  const cooling = serviceState(status?.cooling, status?.power_on, "Cooling now");
+
+  return (
+    <section className="mb-6">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-baseline gap-2">
+          <h2 className="font-semibold text-sm">Heat Pump</h2>
+          {status && (
+            <span className="text-xs text-muted-foreground">
+              {status.power_on ? "Powered on" : "Powered off"}
+              {status.season_program && ` · Season program ${status.season_program}`}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {lastUpdate && <span className="text-xs text-muted-foreground">Updated {lastUpdate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</span>}
+          <Button size="sm" variant="outline" className="h-7 text-xs gap-1"
+            onClick={() => { setRefreshing(true); refresh(); }} disabled={refreshing}>
+            <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+          </Button>
+        </div>
+      </div>
+
+      {status?.alarm_active && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300 mb-3">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+          <span>{status.alarm_text}</span>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="h-20 rounded-xl bg-muted/30 animate-pulse" />
+      ) : (
+        <>
+          {/* Flow → Return ΔT is omitted when there is no return reading: this
+              unit has no return sensor, and a permanent "—" reads as a fault. */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+            <Metric label="Buffer Tank" value={tank?.buffer_temp_c?.toFixed(1) ?? null} unit="°C"
+              sub={tank?.buffer_setpoint_c != null ? `→ ${tank.buffer_setpoint_c.toFixed(1)}°C` : undefined} />
+            <Metric label="DHW Cylinder" value={tank?.dhw_temp_c?.toFixed(1) ?? null} unit="°C"
+              sub={tank?.dhw_setpoint_c != null ? `→ ${tank.dhw_setpoint_c.toFixed(1)}°C` : undefined} />
+            <Metric label="Recirc Setpoint" value={status?.dhw?.recirculation_c?.toFixed(1) ?? null} unit="°C"
+              sub={status?.dhw?.recirculation_enabled ? "Enabled" : "Disabled"} />
+            <Metric label="Outdoor" value={temps?.["Outdoor Temperature"]?.value?.toFixed(1) ?? null} unit="°C" />
+            {dT != null && <Metric label="Flow → Return ΔT" value={dT} unit="°C" />}
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <ServiceCard service="heating" label="Heating" state={heating}
+              target={status?.heating?.setpoint_c != null ? `Target ${status.heating.setpoint_c.toFixed(1)}°C` : undefined} />
+            <ServiceCard service="dhw" label="Hot Water" state={dhw}
+              target={status?.dhw?.setpoint_c != null ? `Target ${status.dhw.setpoint_c.toFixed(1)}°C` : undefined} />
+            <ServiceCard service="cooling" label="Cooling" state={cooling} />
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+// ── Recirculation tab ─────────────────────────────────────────────────────────
+function Recirculation({ status, dhwTemp }: { status: HpStatus | null; dhwTemp: number | null }) {
+  if (!status) return <p className="text-muted-foreground text-sm">Loading…</p>;
+  const recirc = status.dhw;
+  const recircOn = recirc?.recirculation_enabled;
+  // Recirculation is "actively circulating" when DHW temp has dropped below (setpoint - delta)
+  const recircSetpoint = recirc?.recirculation_c ?? null;
+  const recircDelta = recirc?.recirculation_delta ?? null;
+  const triggerTemp = recircSetpoint != null && recircDelta != null ? recircSetpoint - recircDelta : null;
+  const isCirculating = dhwTemp != null && triggerTemp != null && dhwTemp <= triggerTemp;
+
+  return (
+    <div className={`rounded-xl border px-4 py-4 ${
+      recircOn
+        ? isCirculating
+          ? "border-teal-400/40 bg-teal-500/10"
+          : "border-teal-500/20 bg-teal-500/5"
+        : "border-border/40 bg-muted/20"
+    }`}>
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Droplets className={`h-4 w-4 ${recircOn ? "text-teal-400" : "text-muted-foreground"}`} />
+          <p className="text-sm font-medium">Hot Water Recirculation</p>
+        </div>
+        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+          recircOn
+            ? isCirculating
+              ? "bg-teal-500/20 text-teal-300"
+              : "bg-teal-500/10 text-teal-400"
+            : "bg-muted/40 text-muted-foreground"
+        }`}>
+          {recircOn ? (isCirculating ? "Circulating" : "Standby") : "Disabled"}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <div>
+          <p className="text-xs text-muted-foreground">Current DHW</p>
+          <p className="text-xl font-semibold tabular-nums mt-0.5">
+            {dhwTemp != null ? `${dhwTemp.toFixed(1)}°C` : "—"}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Recirc Setpoint</p>
+          <p className="text-xl font-semibold tabular-nums mt-0.5">
+            {recircSetpoint != null ? `${recircSetpoint.toFixed(1)}°C` : "—"}
+          </p>
+          {recircDelta != null && (
+            <p className="text-xs text-muted-foreground">±{recircDelta.toFixed(1)}°C band</p>
+          )}
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Triggers below</p>
+          <p className="text-xl font-semibold tabular-nums mt-0.5">
+            {triggerTemp != null ? `${triggerTemp.toFixed(1)}°C` : "—"}
+          </p>
+          {dhwTemp != null && triggerTemp != null && (
+            <p className={`text-xs mt-0.5 ${dhwTemp <= triggerTemp ? "text-teal-400" : "text-muted-foreground"}`}>
+              {dhwTemp <= triggerTemp ? "Below trigger" : `${(dhwTemp - triggerTemp).toFixed(1)}°C above`}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Temperatures tab ──────────────────────────────────────────────────────────
+function Temperatures({ realtime }: { realtime: HpRealtime | null }) {
+  if (!realtime) return <p className="text-muted-foreground text-sm">Loading…</p>;
+  const tank = realtime.tank;
+  const temps = realtime.temperatures;
+
+  const get = (key: string) => temps?.[key]?.value ?? null;
+
+  return (
+    <div className="space-y-4">
+      {/* Tank temps — primary */}
+      <div className="grid grid-cols-2 gap-3">
+        <Metric label="Buffer Tank" value={tank?.buffer_temp_c?.toFixed(1) ?? null} unit="°C"
+          sub={tank?.buffer_setpoint_c != null ? `Setpoint ${tank.buffer_setpoint_c.toFixed(1)}°C` : undefined} />
+        <Metric label="DHW Cylinder" value={tank?.dhw_temp_c?.toFixed(1) ?? null} unit="°C"
+          sub={tank?.dhw_setpoint_c != null ? `Setpoint ${tank.dhw_setpoint_c.toFixed(1)}°C` : undefined} />
+      </div>
+      {/* Heating circuit temps */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Metric label="Flow (T1)" value={get("Flow Temperature")?.toFixed(1) ?? null} unit="°C" />
+        <Metric label="Return (T2)" value={get("Return Temperature")?.toFixed(1) ?? null} unit="°C"
+          sub={get("Return Temperature") == null ? "no sensor on this unit" : undefined} />
+        <Metric label="Outdoor" value={get("Outdoor Temperature")?.toFixed(1) ?? null} unit="°C" />
+        <Metric label="Heating Outlet 2" value={get("Heating Circuit Outlet 2")?.toFixed(1) ?? null} unit="°C" />
+      </div>
+      {/* Brine (ground loop) temps */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Metric label="Brine Inlet" value={get("Brine Inlet Temperature")?.toFixed(1) ?? null} unit="°C"
+          sub="from ground" />
+        <Metric label="Brine Outlet" value={get("Brine Outlet Temperature")?.toFixed(1) ?? null} unit="°C"
+          sub="to ground" />
+        {get("Brine Inlet Temperature") != null && get("Brine Outlet Temperature") != null && (
+          <Metric label="Brine ΔT" value={(get("Brine Inlet Temperature")! - get("Brine Outlet Temperature")!).toFixed(1)} unit="°C" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Energy tab ────────────────────────────────────────────────────────────────
+function Energy({ rows, onLog }: { rows: EnergyRow[]; onLog: () => void }) {
+  const [logging, setLogging] = useState(false);
+
+  async function handleLog() {
+    setLogging(true);
+    try { await api.hpEnergyLog(); } finally { setLogging(false); onLog(); }
+  }
+
+  if (!rows.length) return (
+    <div className="text-center py-12 space-y-3">
+      <p className="text-muted-foreground text-sm">No energy data yet.</p>
+      <Button size="sm" onClick={handleLog} disabled={logging}>{logging ? "Logging…" : "Log Now"}</Button>
+    </div>
+  );
+
+  // Detect which field is consumed/produced from actual data keys
+  // Ecoforest op 2126: ECCOP = total electricity consumed, EDCOP = total heat delivered
+  // Fall back to other common patterns
+  function detectKeys(sample: EnergyRow): { consumed: string | null; produced: string | null } {
+    const keys = Object.keys(sample);
+    const consumed = keys.find(k => k === "ECCOP") ?? keys.find(k => /consumed|CONSUMED|EC$/i.test(k)) ?? null;
+    const produced = keys.find(k => k === "EDCOP") ?? keys.find(k => /produced|PRODUCED|ED$/i.test(k)) ?? null;
+    return { consumed, produced };
+  }
+
+  const { consumed: consumedKey, produced: producedKey } = rows.length > 0 ? detectKeys(rows[0]) : { consumed: null, produced: null };
+
+  const chartData = rows.map((r, i) => {
+    const prev = rows[i - 1];
+    let cop: number | null = null;
+    let producedDelta = 0;
+    let consumedDelta = 0;
+    if (prev && consumedKey && producedKey) {
+      producedDelta = Math.max(0, Number(r[producedKey] ?? 0) - Number(prev[producedKey] ?? 0));
+      consumedDelta = Math.max(0, Number(r[consumedKey] ?? 0) - Number(prev[consumedKey] ?? 0));
+      if (consumedDelta > 0 && producedDelta > 0) cop = Math.min(10, producedDelta / consumedDelta);
+    }
+    return {
+      time: new Date(String(r.timestamp ?? r.ts ?? "")).toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+      cop,
+      produced: producedDelta,
+      consumed: consumedDelta,
+    };
+  }).filter((_, i) => i > 0);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-end">
+        <Button size="sm" variant="outline" onClick={handleLog} disabled={logging} className="h-7 text-xs gap-1">
+          <Zap className="h-3 w-3" />{logging ? "Logging…" : "Log Now"}
+        </Button>
+      </div>
+
+      <div>
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">COP (Efficiency)</p>
+        <ResponsiveContainer width="100%" height={200}>
+          <LineChart data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+            <XAxis dataKey="time" tick={{ fontSize: 10, fill: "rgba(255,255,255,0.4)" }} />
+            <YAxis domain={[0, 6]} tick={{ fontSize: 10, fill: "rgba(255,255,255,0.4)" }} />
+            <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} />
+            <Line type="monotone" dataKey="cop" stroke="#f97316" dot={false} strokeWidth={2} name="COP" connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div>
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">Energy (kWh)</p>
+        <ResponsiveContainer width="100%" height={200}>
+          <BarChart data={chartData.slice(-30)}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+            <XAxis dataKey="time" tick={{ fontSize: 10, fill: "rgba(255,255,255,0.4)" }} />
+            <YAxis tick={{ fontSize: 10, fill: "rgba(255,255,255,0.4)" }} />
+            <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Bar dataKey="produced" fill="#34d399" name="Produced" />
+            <Bar dataKey="consumed" fill="#f87171" name="Consumed" />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// ── Alarms tab ────────────────────────────────────────────────────────────────
+function Alarms({ data }: { data: HpAlarms | null }) {
+  if (!data) return <p className="text-muted-foreground text-sm">Loading…</p>;
+  return (
+    <div className="space-y-3">
+      <div className={`flex items-center gap-2 rounded-lg border px-4 py-3 text-sm ${
+        data.alarm_active ? "border-red-500/40 bg-red-500/10 text-red-300" : "border-green-500/40 bg-green-500/10 text-green-300"
+      }`}>
+        <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+        {data.alarm_active ? data.alarm_text : "No active alarms"}
+      </div>
+      {data.slots.map(s => (
+        <div key={s.slot} className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3">
+          <p className="font-medium text-sm text-red-300">Slot {s.slot} — Code {s.code}</p>
+          <p className="text-sm text-muted-foreground mt-0.5">{s.description}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── AI Insight panel ──────────────────────────────────────────────────────────
+export function HeatPumpAiInsight() {
+  const [text, setText] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [ts, setTs] = useState<string | null>(null);
+
+  const fetch = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await api.hpExplain();
+      setText(r.explanation ?? null);
+      setTs(r.ts ?? null);
+    } catch {
+      setText("Could not load AI explanation.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetch(); }, [fetch]);
+
+  return (
+    <div className="rounded-xl border border-violet-500/30 bg-violet-500/5 px-4 py-3 mb-5">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-1.5 text-violet-300 text-xs font-medium">
+          <Sparkles className="h-3.5 w-3.5" />
+          AI Analysis
+        </div>
+        <div className="flex items-center gap-2">
+          {ts && <span className="text-xs text-muted-foreground">{new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</span>}
+          <button onClick={fetch} disabled={loading} className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
+            {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+          </button>
+        </div>
+      </div>
+      {loading && !text ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Analysing heat pump data…
+        </div>
+      ) : (
+        <p className="text-sm leading-relaxed text-foreground/90">{text ?? "—"}</p>
+      )}
+    </div>
+  );
+}
+
+// ── Detail — the diagnostic half, below the rooms ─────────────────────────────
+export function HeatPumpDetail({ hp }: { hp: HeatPump }) {
+  const { realtime, status, energyRows, alarms, loading, refresh } = hp;
+  const hpUrl = process.env.NEXT_PUBLIC_HP_TAILSCALE_URL;
+
+  if (loading) {
+    return <div className="space-y-3">{[...Array(3)].map((_, i) => <div key={i} className="h-16 rounded-xl bg-muted/30 animate-pulse" />)}</div>;
+  }
+
+  return (
+    <Tabs defaultValue="temperatures">
+      <TabsList className="mb-4">
+        <TabsTrigger value="temperatures">Temperatures</TabsTrigger>
+        <TabsTrigger value="recirculation">Recirculation</TabsTrigger>
+        <TabsTrigger value="energy">Energy</TabsTrigger>
+        <TabsTrigger value="alarms">Alarms {Boolean(status?.alarm_active) && "⚠"}</TabsTrigger>
+        {hpUrl && <TabsTrigger value="native">Native UI</TabsTrigger>}
+      </TabsList>
+
+      <TabsContent value="temperatures"><Temperatures realtime={realtime} /></TabsContent>
+      <TabsContent value="recirculation"><Recirculation status={status} dhwTemp={realtime?.tank?.dhw_temp_c ?? null} /></TabsContent>
+      <TabsContent value="energy"><Energy rows={energyRows} onLog={refresh} /></TabsContent>
+      <TabsContent value="alarms"><Alarms data={alarms} /></TabsContent>
+      {hpUrl && (
+        <TabsContent value="native">
+          <div className="flex items-center gap-2 mb-3">
+            <a href={hpUrl} target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+              <ExternalLink className="h-3 w-3" /> Open in new tab
+            </a>
+            <span className="text-xs text-muted-foreground">(requires Tailscale)</span>
+          </div>
+          <iframe src={hpUrl} className="w-full rounded-xl border border-border/40"
+            style={{ height: "calc(100vh - 280px)" }} title="Heat Pump Native UI" />
+        </TabsContent>
+      )}
+    </Tabs>
+  );
+}

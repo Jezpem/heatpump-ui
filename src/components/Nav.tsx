@@ -1,14 +1,13 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Flame, Activity, BarChart2, Settings, ScrollText, Camera, Wrench, Thermometer, Network, Menu, X, LayoutGrid, Zap } from "lucide-react";
+import { Flame, BarChart2, Settings, ScrollText, Camera, Wrench, Thermometer, Network, Menu, X, LayoutGrid, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 
 const links = [
   { href: "/",            label: "Dashboard",  icon: Flame },
   { href: "/rooms",       label: "Rooms",      icon: LayoutGrid },
-  { href: "/heatpump",    label: "Heat Pump",  icon: Activity },
   { href: "/energy",      label: "Energy",     icon: Zap },
   { href: "/plant-room",  label: "Plant Room", icon: Wrench },
   { href: "/cameras",     label: "Cameras",    icon: Camera },
