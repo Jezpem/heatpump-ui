@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { api } from "@/lib/api";
 import { AiBrain } from "@/components/AiBrain";
+import { BoostCard } from "@/components/Boost";
 import { BoilerStatusBar } from "@/components/BoilerStatus";
 import { RoomCard } from "@/components/RoomCard";
 import {
@@ -67,6 +68,9 @@ export default function Dashboard() {
 
   return (
     <div>
+      {/* Override control — above everything the automation decides */}
+      <BoostCard />
+
       {/* Plant state first — what the heat pump is doing, and any alarm */}
       <HeatPumpSummary hp={hp} />
 

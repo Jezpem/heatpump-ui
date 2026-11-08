@@ -45,6 +45,17 @@ export const api = {
   /** Force an immediate AI cycle */
   cycle: () => apiFetch("/api/cycle", { method: "POST" }),
 
+  /** Boost override state — active flag, when it started, how long it has run */
+  boost: () => apiFetch("/api/boost"),
+
+  /** Remove every automation limit and heat flat out until stopped */
+  startBoost: () =>
+    apiFetch("/api/boost/start", { method: "POST", body: JSON.stringify({ source: "overview-ui" }) }),
+
+  /** Clear the boost override and resume normal automation */
+  stopBoost: () =>
+    apiFetch("/api/boost/stop", { method: "POST", body: JSON.stringify({ source: "overview-ui" }) }),
+
   /** Set a TRV valve position */
   setValve: (deviceId: string, positionPct: number, label = "", cloudId = "") =>
     apiFetch("/api/valve", {
